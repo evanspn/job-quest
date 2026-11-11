@@ -17,7 +17,7 @@ export const layout = () => world.layout;
 export const settings = () => ({ zoom: 1, font_family: "JetBrains Mono" });
 export const agents = () => world.running;
 export const spaces = () => world.spaces ?? [{ id: "s1", name: "~", active: true, machine: null }];
-export const focused = () => null;
+export const focused = () => world.focus ?? null;
 export const playSound = (sound) => { (world.sounds ??= []).push(sound); return null; };
 // Every terminal: the agents, plus any started program that has not reported a status yet.
 export const terminals = () => [...(world.terminals ?? []), ...world.running].map((t) => ({ state: "live", ...t }));

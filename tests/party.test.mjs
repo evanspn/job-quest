@@ -161,7 +161,7 @@ beforeEach(async () => {
   forgetCopies();
   const home = await mkdtemp(join(tmpdir(), "job-quest-party-"));
   Object.assign(world, {
-    home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [], sounds: [], hcs: [],
+    home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [], sounds: [], hcs: [], focus: null,
     spaces: [{ id: "s1", name: "~", active: true, machine: null }],
     agents: [{ key: "claude", name: "Claude Code", run: ["claude"], installed: true }],
   });
@@ -550,4 +550,31 @@ test("an application with no posting or no contact email is closed with its reas
   assert.equal(held.notes, "found on HN Closed by the party: no published contact email (see contact-search.md).");
   await round(view);
   assert.equal(world.notices.filter((n) => /Closed Ghost/.test(n.title)).length, 1);
+});
+
+test("hands off where you are: a message waits while you type in that terminal, no tab moves under you", async () => {
+  const stub = await import("./stubs/herdr.mjs");
+  const sage = { ...party.newJob({ key: "a", member: "sage", kind: "research", appId: "acme-ai-engineer" }), state: "waiting", address: "t1" };
+  party.saveJobs([sage]);
+  world.running = [{ address: "t1", tab: "tab1", tab_name: sage.tab, status: "idle" }];
+  world.focus = { space: "jq", tab: "tab1", terminal: "t1" };
+  world.spaces = [{ id: "s1", name: "~", active: false, machine: null, tabs: [] },
+    { id: "jq", name: "Job Quest", active: true, machine: null, tabs: [{ id: "tab9", active: false }, { id: "tab1", active: true }] }];
+  const view = await copy("chat");
+  view.chatInput.type("@sage/acme use jobs@acme.com");
+  view.chatInput.submit(cx);
+  await until(() => party.outbox().length === 1, "held");
+  assert.equal(world.hcs.length, 0, "nothing typed over what you are writing");
+
+  // Starting someone while you are in the Job Quest space puts your tab back.
+  party.launch(view, party.newJob({ key: "x", member: "scout", kind: "scout", report: "r.md" }), "go");
+  assert.deepEqual(world.ran.slice(-2).map((r) => r.name), ["tab.new", "tab.select"]);
+  assert.deepEqual(world.ran.at(-1).args, { id: "tab1" });
+
+  // You leave: the leader delivers it.
+  world.focus = { space: "s1", tab: "tabA", terminal: "t5" };
+  await party.flushOutbox();
+  assert.deepEqual(world.hcs[0], ["send", "t1", "[Chat] @sage/acme use jobs@acme.com"]);
+  assert.equal(party.outbox().length, 0);
+  void stub;
 });

@@ -6,7 +6,7 @@
 // (a good lead to drafting, finished drafts to ready) and starts the next jobs, at most
 // MAX_PARTY at once, in a space of their own. Every copy reads the jobs from shared state to
 // draw them, and any copy can show a job's agent in the layout's agent block.
-import { run, hc, notify, playSound, agents, terminals, spaces, shared, setShared, layout } from "herdr";
+import { run, hc, notify, playSound, agents, terminals, spaces, shared, setShared, layout, focused } from "herdr";
 import {
   MEMBERS, DOING, plan, jobState, jobDone, jobKey, minFit, isLive, withStage, nameOf, fitOf, findNode,
   mentionsIn, handlesFor,
@@ -18,6 +18,7 @@ export const PARTY_KEY = "job-quest.party";         // { jobs: Job[] }
 export const LEADER_KEY = "job-quest.leader";       // { token, at }
 export const AUTOPILOT_KEY = "job-quest.autopilot"; // false: no new jobs start by themselves
 export const SHOWN_KEY = "job-quest.shown";         // the address the agent block was last given
+export const OUTBOX_KEY = "job-quest.outbox";       // [{ address, text, at }]: held until you leave that terminal
 // Every agent Job Quest starts lives in this space. Earlier versions named it "Job Quest party".
 export const PARTY_SPACE = "Job Quest";
 const OLD_SPACES = ["Job Quest party"];
@@ -214,7 +215,11 @@ export async function route(v, target, text, from = "me") {
     const address = agentFor(job)?.address;
     if (!address || reached.has(address)) return;
     reached.add(address);
-    try { await deliver(address, line); } catch { failed.push(address); }
+    try {
+      if ((await deliverOrHold(address, line)) === "held") {
+        notify({ title: `Held for ${describe(job).member.name}`, body: "You are typing in its terminal; it gets the message when you leave.", level: "info" });
+      }
+    } catch { failed.push(address); }
   };
   for (const job of target.jobs) await send(job, `${tag} ${text}`);
   if (target.lead) {
@@ -231,6 +236,45 @@ export async function route(v, target, text, from = "me") {
     launch(v, job, prompts.followUp(v.dir, member, app, earlier?.text ?? "", text, from === "me" ? "me" : `the ${MEMBERS[from]?.name ?? from}`));
   }
   return failed;
+}
+
+// ---- hands off where the person is
+
+// The terminal that has the person's keyboard (a pane, the agent block, the Terminals view).
+export const typingIn = (address) => Boolean(address) && focused()?.terminal === address;
+
+// The space the person is in, and the tab they are on there.
+function whereYouAre() {
+  const at = focused(), space = spaces().find((s) => (at?.space ? s.id === at.space : s.active));
+  return { space: space ?? null, tab: at?.tab ?? space?.tabs?.find((t) => t.active)?.id ?? null };
+}
+
+export const outbox = () => (Array.isArray(shared(OUTBOX_KEY)) ? shared(OUTBOX_KEY) : []);
+
+// Delivers now, unless the person is typing in that terminal: then it waits in the outbox (the
+// leader delivers it once they leave), so nothing lands on top of what they are writing.
+// Returns "sent" or "held".
+export async function deliverOrHold(address, text) {
+  if (typingIn(address)) {
+    setShared(OUTBOX_KEY, [...outbox(), { address, text, at: Date.now() }]);
+    return "held";
+  }
+  await deliver(address, text);
+  return "sent";
+}
+
+// The leader's part: deliver what waited, in order, once the person has left the terminal;
+// drop what was for a terminal that is gone.
+export async function flushOutbox(running = agents()) {
+  const held = outbox();
+  if (!held.length) return;
+  const keep = [];
+  for (const item of held) {
+    if (!running.some((a) => a.address === item.address)) continue;
+    if (typingIn(item.address)) { keep.push(item); continue; }
+    try { await deliver(item.address, item.text); } catch { keep.push(item); }
+  }
+  setShared(OUTBOX_KEY, keep);
 }
 
 // Types a message into an agent's terminal and presses Enter.
@@ -252,9 +296,12 @@ export function launch(v, job, task) {
   }
   const argv = agent.key === "claude" ? [...agent.run, "--permission-mode", "auto"] : agent.run;
   const args = { folder: v.dir, argv, task };
-  const space = partySpace();
-  if (space) run("tab.new", { name: job.tab, space: space.id, ...args });
-  else {
+  const space = partySpace(), here = whereYouAre();
+  if (space) {
+    run("tab.new", { name: job.tab, space: space.id, ...args });
+    // A new tab may become the shown one: if you were in that space, put your tab back.
+    if (here.space?.id === space.id && here.tab) run("tab.select", { id: here.tab });
+  } else {
     // space.new shows the new space: name its tab, then go back to where the person was.
     const back = spaces().find((s) => s.active);
     run("space.new", { name: PARTY_SPACE, tab: job.tab, ...args });
@@ -282,6 +329,12 @@ export function nextMove(tabs, jobOfTab) {
   return at < 0 ? null : { id: wanted[at].tab.id, index: at + 1 };
 }
 
+// An agent the person is using: shown in the agent block, typed in, or on the tab they are on.
+function inYourWay(agent) {
+  if (!agent) return false;
+  return agent.address === shownAddress() || typingIn(agent.address) || whereYouAre().tab === agent.tab;
+}
+
 // ---- the leader's round
 
 const say = (member, appId, text, now) => ({ at: new Date(now).toISOString(), member, appId, text });
@@ -300,14 +353,14 @@ export async function round(v, now = Date.now()) {
       // Close a finished job's tab once it has had time to be seen, and one that stopped
       // unfinished once it has gone stale; never the one on screen.
       const wait = job.state === "done" ? CLOSE_AFTER : STALE;
-      if (!job.closed && now - job.endedAt > wait && agent?.address !== shownAddress()) {
+      if (!job.closed && now - job.endedAt > wait && !inYourWay(agent)) {
         if (agent) run("tab.close", { id: agent.tab, confirmed: true });
         changed.push({ ...job, closed: true });
       }
       continue;
     }
     // A party job that has waited or sat stopped too long is stale: close it; its step shows Start … now.
-    if (job.auto && ["waiting", "stopped"].includes(job.state) && job.waitingSince && now - job.waitingSince > STALE && agent?.address !== shownAddress()) {
+    if (job.auto && ["waiting", "stopped"].includes(job.state) && job.waitingSince && now - job.waitingSince > STALE && !inYourWay(agent)) {
       const { member, doing } = describe(job);
       if (agent) run("tab.close", { id: agent.tab, confirmed: true });
       changed.push({ ...job, state: "failed", endedAt: now, closed: true });
@@ -340,7 +393,7 @@ export async function round(v, now = Date.now()) {
   // The space: its current name, and its tabs in order of what needs the person.
   const space = partySpace();
   if (space && space.name !== PARTY_SPACE) run("space.rename", { id: space.id, name: PARTY_SPACE });
-  if (space?.tabs?.length > 1) {
+  if (space?.tabs?.length > 1 && whereYouAre().space?.id !== space.id) {
     const all = jobs(), byTab = new Map();
     for (const job of all) {
       const agent = agentFor(job, running);
@@ -349,6 +402,8 @@ export async function round(v, now = Date.now()) {
     const move = nextMove(space.tabs, (id) => byTab.get(id));
     if (move) run("tab.move", move);
   }
+
+  await flushOutbox(running);
 
   // Toast what workers post to the chat, once each; what was there before this copy started is old.
   if (!v.chatSeen) v.chatSeen = new Set(snap.chat.map((m) => m.id));
