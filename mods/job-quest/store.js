@@ -76,6 +76,9 @@ export const saveRepos = (dir, repos) => put(`${dir}/repos.json`, format(toRepos
 export const saveApplication = (dir, application) =>
   put(`${appDir(dir, application.id)}/application.json`, format(stored(application, today())));
 export const savePosting = (dir, id, posting) => put(`${appDir(dir, id)}/posting.md`, posting.trim() + "\n");
+// A document edited in the panel: saved only if the file still holds `original`, so an
+// agent's newer text is never overwritten. Rejects on a conflict.
+export const saveDocument = (dir, id, file, text, original) => writeTextFile(`${appDir(dir, id)}/${file}`, text, original);
 export const readDocument = (dir, id, file) => read(`${appDir(dir, id)}/${file}`);
 
 export async function addNotes(dir, notes) {

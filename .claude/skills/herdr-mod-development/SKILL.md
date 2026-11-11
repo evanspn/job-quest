@@ -1,6 +1,6 @@
 ---
 name: herdr-mod-development
-description: How to write and check a mod for the Herdr desktop app (herdr.dev): where mods live, the View/render model, the UI builders, the `herdr` host module, and the traps. Use when adding or changing anything under mods/, writing a layout or keys.json entry, or debugging a mod that does not load or draw.
+description: How to write and check a mod or layout for the Herdr desktop app (herdr.dev): where files live, the View/render model, the UI builders, the `herdr` host module, and the traps. Use when adding or changing anything under mods/ or layouts/, writing a keys.json entry, or debugging a mod that does not load or draw.
 ---
 
 # Developing a Herdr mod

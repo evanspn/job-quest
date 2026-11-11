@@ -1,5 +1,5 @@
 {
   "global": {
-    "ctrl-shift-j": "mod.open:job-quest"
+    "ctrl-shift-j": "layout.switch:job-quest"
   }
 }

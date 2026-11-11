@@ -17,6 +17,8 @@ class TextState {
 
 export class InputState extends TextState { static new(options) { return new InputState(options); } }
 export class TextareaState extends TextState { static new(options) { return new TextareaState(options); } }
+export class EditorState extends TextState { static new(options) { return new EditorState(options); } }
+export const Editor = { new: (state) => element("editor", state) };
 export const Input = { new: (state) => element("input", state) };
 export const Textarea = { new: (state) => element("textarea", state) };
 export const TextView = { markdown: (id, text) => element("markdown").id(id).child(text) };

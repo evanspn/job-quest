@@ -2,7 +2,7 @@
 import * as fs from "node:fs/promises";
 import { dirname } from "node:path";
 
-export const world = { home: "", shared: {}, ran: [], execs: [], notices: [], agents: [], exec: null };
+export const world = { home: "", shared: {}, ran: [], execs: [], notices: [], agents: [], exec: null, props: null, layout: null, running: [] };
 
 export const home = () => world.home;
 export const appHome = () => `${world.home}/.config/herdr-app`;
@@ -12,6 +12,11 @@ export const run = (name, args) => { world.ran.push({ name, args }); return null
 export const notify = (notice) => { world.notices.push(notice); return "n1"; };
 export const theme = () => new Proxy({}, { get: (_t, name) => `#${String(name)}` });
 export const window = () => ({ platform: "linux" });
+export const props = () => world.props;
+export const layout = () => world.layout;
+export const settings = () => ({ zoom: 1, font_family: "JetBrains Mono" });
+export const agents = () => world.running;
+export const nextCommand = () => new Promise(() => {});
 export const knownAgents = async () => world.agents;
 export const pickFolder = async () => null;
 export const watchFolder = () => new Promise(() => {});

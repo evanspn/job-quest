@@ -7,6 +7,31 @@ export const STAGE_LABEL = {
   interview: "Interviewing", offer: "Offer", rejected: "Rejected", closed: "Closed",
 };
 
+// An application's documents: the file, the snapshot flag that says it exists, its name.
+export const DOCS = [
+  { id: "posting", file: "posting.md", has: "hasPosting", label: "Posting" },
+  { id: "resume", file: "resume.md", has: "hasResume", label: "Resume" },
+  { id: "letter", file: "cover-letter.md", has: "hasCoverLetter", label: "Cover letter" },
+  { id: "email", file: "email.md", has: "hasEmail", label: "Email" },
+];
+
+// The board's columns: every open stage always, the two closed ones only when used.
+export function columns(applications) {
+  return STAGES.filter((stage) => !["rejected", "closed"].includes(stage) || applications.some((a) => a.stage === stage))
+    .map((stage) => ({ stage, label: STAGE_LABEL[stage], rows: applications.filter((a) => a.stage === stage) }));
+}
+
+// A node of a layout tree by id (layout() gives the shown tree), or null.
+export function findNode(node, id) {
+  if (!node || typeof node !== "object") return null;
+  if (node.id === id) return node;
+  for (const child of [...(node.children ?? []), ...(node.floating ?? [])]) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 // What the person is looking for: intake.json. Every field is free text.
 export const INTAKE_FIELDS = [
   { key: "roles", label: "Roles", hint: "Backend engineer, platform engineer" },

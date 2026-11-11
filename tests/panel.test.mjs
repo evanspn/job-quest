@@ -1,14 +1,17 @@
-// Drives the panel over a real temporary folder with stand-ins for Herdr's modules (tests/stubs).
-// It proves the mod's own logic: what a click or Enter writes, and what is handed to an agent.
-// It cannot prove the UI calls exist in Herdr: run `herdr-app check` on the installed mod for that.
+// Drives the mod over a real temporary folder with stand-ins for Herdr's modules (tests/stubs).
+// It proves the mod's own logic: what a click or Enter writes, what is handed to an agent, and
+// how the parts stay in step. It cannot prove the UI calls exist in Herdr: the stand-ins accept
+// any builder. Run `herdr-app check` on the installed mod for that.
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { world } from "./stubs/herdr.mjs";
-import { find, texts } from "./stubs/gpui-kit.mjs";
-import JobQuest from "../mods/job-quest/main.js";
+import { find, texts, walk } from "./stubs/gpui-kit.mjs";
+import JobQuest, { PARTS, VIEW_STACK, AGENT_BLOCK } from "../mods/job-quest/main.js";
+
+const LAYOUT = JSON.parse(await readFile(new URL("../layouts/job-quest.json", import.meta.url), "utf8"));
 
 const cx = {
   notify() {}, stop_propagation() {},
@@ -27,7 +30,9 @@ async function until(check, what) {
   assert.fail(`timed out waiting for ${what}`);
 }
 
-async function panel() {
+// A copy of the mod as the layout would place it; no part is the standalone panel.
+async function copy(part) {
+  world.props = part ? { part } : null;
   const view = new JobQuest();
   view.init({}, cx);
   await until(() => view.snap, "the first read");
@@ -40,26 +45,46 @@ const click = (view, id) => {
   node.click({}, cx);
 };
 
+async function seed(id, files) {
+  await mkdir(join(dir, "applications", id), { recursive: true });
+  for (const [name, text] of Object.entries(files)) await writeFile(join(dir, "applications", id, name), text);
+}
+
 beforeEach(async () => {
   const home = await mkdtemp(join(tmpdir(), "job-quest-"));
-  Object.assign(world, { home, shared: {}, ran: [], execs: [], notices: [], exec: null,
+  Object.assign(world, { home, shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [],
     agents: [{ key: "claude", name: "Claude Code", run: ["claude"], installed: true }, { key: "codex", name: "Codex", run: ["codex"], installed: false }] });
   dir = join(home, "job-quest-data");
   globalThis.localStorage = { getItem: () => null, setItem() {} };
 });
 
+test("the layout places parts this mod draws, under the ids it drives", () => {
+  const ids = [], parts = [];
+  const visit = (node) => {
+    ids.push(node.id);
+    if (node.content?.mod === "job-quest") parts.push(node.content.props.part);
+    if (node.type === "stack") assert.ok(node.children.some((c) => c.id === node.active), `stack ${node.id} shows a child it has`);
+    (node.children ?? []).forEach(visit);
+  };
+  visit(LAYOUT);
+  assert.equal(new Set(ids).size, ids.length, "node ids are unique");
+  assert.deepEqual(parts.sort(), ["bar", "board", "detail", "intake", "profile"]);
+  for (const part of parts) assert.ok(PARTS.includes(part));
+  for (const id of [VIEW_STACK, AGENT_BLOCK, "jq-pipeline", "jq-profile", "jq-intake", "jq-terminals"]) assert.ok(ids.includes(id), id);
+});
+
 test("first run writes the guides and the agents' instructions, and never overwrites a guide", async () => {
   await mkdir(join(dir, "guides"), { recursive: true });
   await writeFile(join(dir, "guides/resume-guide.md"), "mine\n");
-  await panel();
+  await copy();
   assert.equal(await readFile(join(dir, "guides/resume-guide.md"), "utf8"), "mine\n");
   assert.match(await readFile(join(dir, "guides/cover-letter-guide.md"), "utf8"), /^# Cover letter guide/);
   assert.match(await readFile(join(dir, "AGENTS.md"), "utf8"), new RegExp(dir));
   assert.equal(await readFile(join(dir, "CLAUDE.md"), "utf8"), "@AGENTS.md\n");
 });
 
-test("an application goes from a new row to a drafting agent to applied", async () => {
-  const view = await panel();
+test("in the panel, an application goes from a new card to a drafting agent to applied", async () => {
+  const view = await copy();
   const app = "applications/acme-backend-engineer";
 
   view.newApp.type("Acme, Backend Engineer");
@@ -68,11 +93,18 @@ test("an application goes from a new row to a drafting agent to applied", async 
   assert.equal((await json(`${app}/application.json`)).stage, "lead");
   assert.ok(find(view.render(cx), "jq-app-acme-backend-engineer"));
 
-  click(view, "jq-tab-drafts");
+  click(view, "jq-app-acme-backend-engineer");
+  assert.equal(view.tab, "application");
+  click(view, "jq-doc-posting");
   view.posting.type("We need a Go engineer.");
   click(view, "jq-posting-save");
   await until(() => view.application().hasPosting, "the posting");
   assert.equal(await readFile(join(dir, app, "posting.md"), "utf8"), "We need a Go engineer.\n");
+  await until(() => texts(view.render(cx)).includes("We need a Go engineer.\n"), "the posting's preview");
+
+  click(view, "jq-export");
+  assert.equal(world.ran.length, 0, "nothing is exported before a resume exists");
+  assert.match(view.error, /resume first/);
 
   click(view, "jq-draft-both");
   assert.equal(world.ran.length, 1);
@@ -83,11 +115,6 @@ test("an application goes from a new row to a drafting agent to applied", async 
   assert.ok(args.task.includes(`${dir}/${app}/resume.md`));
   await until(async () => (await json(`${app}/application.json`)).stage === "drafting", "the drafting stage");
 
-  click(view, "jq-tab-submit");
-  click(view, "jq-export");
-  assert.equal(world.ran.length, 1, "nothing is exported before a resume exists");
-  assert.match(view.error, /resume first/);
-
   click(view, "jq-applied");
   await until(() => view.application().stage === "applied", "the applied stage");
   const applied = await json(`${app}/application.json`);
@@ -95,31 +122,92 @@ test("an application goes from a new row to a drafting agent to applied", async 
   assert.ok(applied.followUpAt > applied.appliedAt);
 });
 
+test("in the layout, the board and the detail are separate copies that stay in step", async () => {
+  world.layout = LAYOUT;
+  await seed("acme", { "application.json": JSON.stringify({ company: "Acme", role: "Dev" }) });
+  const board = await copy("board"), detail = await copy("detail");
+  assert.ok(texts(detail.render(cx)).some((text) => text.includes("Pick an application")));
+
+  click(board, "jq-app-acme");
+  await until(() => texts(detail.render(cx)).includes("Acme · Dev"), "the detail to follow the board's selection");
+
+  click(detail, "jq-stage-interview");
+  await until(async () => (await json("applications/acme/application.json")).stage === "interview", "the stage");
+  await until(() => { board.render(cx); return board.snap.applications[0].stage === "interview"; }, "the board to reload after the detail's save");
+});
+
+test("the bar switches the layout's view and shows which one is up", async () => {
+  world.layout = LAYOUT;
+  const bar = await copy("bar");
+  assert.equal(bar.view(), "jq-pipeline");
+  click(bar, "jq-view-profile");
+  assert.deepEqual(world.ran.at(-1), { name: "layout.select", args: { stack: "jq-view", child: "jq-profile" } });
+  click(bar, "jq-leave");
+  assert.deepEqual(world.ran.at(-1), { name: "layout.switch", args: { name: "main" } });
+});
+
+test("a started agent is shown beside the board once it appears", async () => {
+  world.layout = LAYOUT;
+  const intake = await copy("intake");
+  click(intake, "jq-intake-interview");
+  assert.equal(world.ran[0].name, "tab.new");
+  intake.followAgent(cx);
+  assert.equal(world.ran.length, 1, "nothing to show until the agent exists");
+  world.running = [{ address: "t9" }];
+  intake.followAgent(cx);
+  assert.deepEqual(world.ran.slice(1), [
+    { name: "agent.focus", args: { terminal: "t9" } },
+    { name: "layout.show", args: { id: "jq-agent" } },
+  ]);
+  assert.equal(intake.awaiting, null);
+});
+
+test("a document is edited in place, and an agent's newer text is never overwritten", async () => {
+  await seed("acme", { "application.json": JSON.stringify({ company: "Acme" }), "resume.md": "# Me\n" });
+  world.shared["job-quest.selected"] = "acme";
+  const view = await copy("detail");
+  click(view, "jq-doc-resume");
+  await until(() => view.doc?.text === "# Me\n", "the resume");
+
+  click(view, "jq-edit");
+  view.edit.state.type("# Me, edited\n");
+  click(view, "jq-edit-save");
+  await until(async () => (await readFile(join(dir, "applications/acme/resume.md"), "utf8")) === "# Me, edited\n", "the save");
+  await until(() => view.edit === null && view.doc.text === "# Me, edited\n", "the preview");
+
+  click(view, "jq-edit");
+  view.edit.state.type("mine\n");
+  await writeFile(join(dir, "applications/acme/resume.md"), "the agent's\n");
+  click(view, "jq-edit-save");
+  await until(() => view.error, "the conflict");
+  assert.match(view.error, /changed on disk/);
+  assert.equal(await readFile(join(dir, "applications/acme/resume.md"), "utf8"), "the agent's\n");
+  assert.equal(view.edit.state.value(), "mine\n", "the person's text is kept in the editor");
+});
+
 test("Enter in one field saves what was typed in the others", async () => {
-  const view = await panel();
-  view.fields.get("intake:roles").state.type("Platform engineer");
-  view.fields.get("intake:salaryMin").state.type(" 150k ");
-  view.fields.get("intake:salaryMin").state.submit(cx);
+  const view = await copy("intake");
+  view.field("intake:roles").type("Platform engineer");
+  view.field("intake:salaryMin").type(" 150k ");
+  view.field("intake:salaryMin").submit(cx);
   await until(async () => (await json("intake.json")).salaryMin === "150k", "the intake file");
   assert.equal((await json("intake.json")).roles, "Platform engineer");
 });
 
 test("a field follows the file unless the person is typing in it", async () => {
-  const view = await panel();
-  const roles = view.fields.get("intake:roles").state, stack = view.fields.get("intake:stack").state;
-  stack.type("Go");
+  const view = await copy("intake");
+  view.field("intake:stack").type("Go");
   await writeFile(join(dir, "intake.json"), JSON.stringify({ roles: "From the agent", stack: "Rust" }));
   await view.reload(cx);
-  assert.equal(roles.value(), "From the agent");
-  assert.equal(stack.value(), "Go");
+  assert.equal(view.field("intake:roles").value(), "From the agent");
+  assert.equal(view.field("intake:stack").value(), "Go");
 });
 
 test("GitHub import adds repositories left out, and a click includes one", async () => {
   world.exec = (command) => (command === "gh"
     ? { code: 0, stderr: "", stdout: JSON.stringify([{ nameWithOwner: "me/tool", url: "https://github.com/me/tool", isPrivate: true }]) }
     : { code: 0, stdout: "", stderr: "" });
-  const view = await panel();
-  click(view, "jq-tab-profile");
+  const view = await copy("profile");
   click(view, "jq-repos-import");
   await until(() => view.snap.repos.length === 1, "the import");
   assert.deepEqual(world.execs[0].args.slice(0, 2), ["repo", "list"]);
@@ -136,47 +224,58 @@ test("GitHub import adds repositories left out, and a click includes one", async
 
 test("a failed GitHub import says what it needs", async () => {
   world.exec = () => { throw new Error("gh: not found"); };
-  const view = await panel();
-  click(view, "jq-tab-profile");
+  const view = await copy("profile");
   click(view, "jq-repos-import");
   await until(() => view.error, "the error");
   assert.match(view.error, /gh auth login/);
+  assert.equal(view.busy, null);
 });
 
 test("with no agent installed, a button says so and starts nothing", async () => {
   world.agents = [];
-  const view = await panel();
-  click(view, "jq-tab-intake");
+  const view = await copy("intake");
   click(view, "jq-intake-interview");
   assert.equal(world.ran.length, 0);
   assert.equal(world.notices[0].level, "error");
 });
 
 test("the email opens in the mail app as a draft", async () => {
-  await mkdir(join(dir, "applications/acme"), { recursive: true });
-  await writeFile(join(dir, "applications/acme/application.json"), JSON.stringify({ company: "Acme", contactEmail: "jobs@acme.com" }));
-  await writeFile(join(dir, "applications/acme/resume.md"), "# Me\n");
-  await writeFile(join(dir, "applications/acme/email.md"), "Subject: Hello\n\nHi team\n");
-  const view = await panel();
-  view.select("acme", cx);
-  click(view, "jq-tab-submit");
+  await seed("acme", {
+    "application.json": JSON.stringify({ company: "Acme", contactEmail: "jobs@acme.com" }),
+    "resume.md": "# Me\n", "email.md": "Subject: Hello\n\nHi team\n",
+  });
+  world.shared["job-quest.selected"] = "acme";
+  const view = await copy("detail");
   click(view, "jq-email-open");
   await until(() => world.execs.length === 1, "the mail app");
   assert.equal(world.execs[0].command, "xdg-open");
   assert.equal(world.execs[0].args[0], "mailto:jobs%40acme.com?subject=Hello&body=Hi%20team");
 });
 
-test("every tab renders, with and without a selected application", async () => {
-  const view = await panel();
-  for (const tab of ["intake", "profile", "pipeline", "drafts", "submit"]) {
-    click(view, `jq-tab-${tab}`);
-    assert.ok(texts(view.render(cx)).length > 0);
-  }
-  view.newApp.type("Acme, Dev");
-  view.newApp.submit(cx);
-  await until(() => view.application(), "the application");
-  for (const tab of ["pipeline", "drafts", "submit"]) {
-    click(view, `jq-tab-${tab}`);
-    assert.ok(texts(view.render(cx)).some((text) => text.includes("Acme")));
+test("the board draws columns when wide and groups when narrow", async () => {
+  await seed("acme", { "application.json": JSON.stringify({ company: "Acme", stage: "applied", followUpAt: "2020-01-01" }) });
+  const view = await copy("board");
+  const headings = () => texts(view.render(cx)).filter((text) => ["Leads", "Applied", "Offer", "Rejected"].includes(text));
+  assert.deepEqual(headings(), ["Applied"]);
+  find(view.render(cx), "job-quest-board").resize({ width: 900, height: 600 }, cx);
+  assert.deepEqual(headings(), ["Leads", "Applied", "Offer"]);
+  assert.ok(texts(view.render(cx)).includes("Follow up due: Acme"));
+});
+
+test("every part renders, with and without a selected application, and ids are unique", async () => {
+  world.layout = LAYOUT;
+  await seed("acme", { "application.json": JSON.stringify({ company: "Acme", role: "Dev" }), "resume.md": "# Me\n" });
+  for (const selected of [undefined, "acme"]) {
+    world.shared["job-quest.selected"] = selected;
+    for (const part of [...PARTS.filter((p) => p !== "panel"), null]) {
+      const view = await copy(part);
+      for (const tab of part ? [null] : ["pipeline", "application", "profile", "intake"]) {
+        if (tab) click(view, `jq-tab-${tab}`);
+        const root = view.render(cx), ids = [];
+        walk(root, (node) => { if (node.id_) ids.push(node.id_); });
+        assert.ok(texts(root).length > 0);
+        assert.equal(new Set(ids).size, ids.length, `duplicate id in ${part ?? "panel"}/${tab}: ${ids.filter((id, i) => ids.indexOf(id) !== i)}`);
+      }
+    }
   }
 });

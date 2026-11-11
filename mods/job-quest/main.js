@@ -1,37 +1,48 @@
-// Job Quest: a job-search workspace in five tabs. Intake (what you want), Profile (your documents
-// and GitHub projects), Pipeline (applications by stage), Drafts (tailored resume and cover
-// letter), Submit (application email, PDFs, mark applied). Data is plain files in a local folder.
-// Work that needs judgement is handed to a coding agent, started in a new tab with the task.
-import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
-import { run, exec, theme, notify, knownAgents, pickFolder, shared, setShared, watchFolder, window } from "herdr";
+// Job Quest: a job-search workspace. One mod drawn as several parts, chosen by props.part:
+//
+//   bar      the top bar of the Job Quest layout: views, agent, refresh
+//   board    applications as columns by stage
+//   detail   the selected application: stage, fields, documents, actions
+//   profile  source documents, word dump, master profile, GitHub projects
+//   intake   what the person is looking for, the data folder, the agent
+//   (none)   all of it in one tabbed panel, for use outside the layout
+//
+// layouts/job-quest.json places the parts. The parts are separate copies, so what they share
+// goes through shared(): the selected application, and a revision that makes the others reload.
+// This file holds the state and the actions; views.js draws.
+import { View } from "gpui-kit";
+import { InputState, TextareaState, EditorState } from "gpui-base";
 import {
-  STAGES, STAGE_LABEL, INTAKE_FIELDS, parse, newApplication, withStage, followUpsDue, parseRepo,
-  mergeRepos, toggleRepo, addRepo, isLink, mailto, nameOf,
+  run, exec, notify, knownAgents, agents, pickFolder, shared, setShared, watchFolder, window,
+  layout, settings, props, nextCommand,
+} from "herdr";
+import {
+  INTAKE_FIELDS, DOCS, parse, newApplication, withStage, parseRepo, mergeRepos, toggleRepo,
+  addRepo, isLink, mailto, findNode,
 } from "./model.js";
 import {
-  DIR_KEY, dataDir, appDir, ensureLayout, loadSnapshot, saveIntake, saveRepos, saveApplication,
-  savePosting, readDocument, addNotes,
+  DIR_KEY, dataDir, ensureLayout, loadSnapshot, saveIntake, saveRepos, saveApplication,
+  savePosting, saveDocument, readDocument, addNotes,
 } from "./store.js";
 import * as prompts from "./prompts.js";
+import { draw } from "./views.js";
 
-const AGENT_KEY = "job-quest.agent";
-const TABS = [["intake", "Intake"], ["profile", "Profile"], ["pipeline", "Pipeline"], ["drafts", "Drafts"], ["submit", "Submit"]];
-// The application fields the panel edits, with where each one's text field is drawn.
-const APP_FIELDS = [
-  { key: "url", label: "Posting link", hint: "https://" },
-  { key: "followUpAt", label: "Follow up on", hint: "YYYY-MM-DD" },
-  { key: "notes", label: "Notes", hint: "Referral, salary range, anything to remember" },
-  { key: "contactName", label: "Contact name", hint: "Who reads the application" },
-  { key: "contactEmail", label: "Contact email", hint: "jobs@company.com" },
-];
+export const SELECTED_KEY = "job-quest.selected";
+export const AGENT_KEY = "job-quest.agent";
+const REVISION_KEY = "job-quest.revision";
+export const PARTS = ["bar", "board", "detail", "profile", "intake", "panel"];
+// The layout's node ids this mod drives.
+export const VIEW_STACK = "jq-view";
+export const AGENT_BLOCK = "jq-agent";
+// The application fields the panel edits.
+export const APP_FIELDS = ["url", "followUpAt", "notes", "contactName", "contactEmail"];
 
 const remembered = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key, value) => { try { localStorage.setItem(key, value); } catch { /* not kept */ } };
 const message = (e) => String(e?.message ?? e);
 
 // Opens a folder or an address with the system's own handler.
-function open(target) {
+export function open(target) {
   const platform = window()?.platform;
   const [command, args] = platform === "macos" ? ["open", [target]]
     : platform === "windows" ? ["cmd", ["/c", "start", "", target]] : ["xdg-open", [target]];
@@ -40,10 +51,17 @@ function open(target) {
 
 export default class JobQuest extends View {
   init(_props, cx) {
-    this.tab = remembered("tab") ?? "pipeline";
-    this.selected = remembered("selected");
-    this.snap = null; this.preview = null; this.error = null; this.agents = []; this.watching = 0;
-    this.fields = new Map();
+    const part = props()?.part;
+    this.part = PARTS.includes(part) ? part : "panel";
+    this.tab = remembered("tab") ?? "pipeline";       // the standalone panel's tab
+    this.docTab = remembered("doc") ?? "posting";     // the detail's document
+    this.snap = null; this.error = null; this.busy = null; this.width = 0;
+    this.doc = null;      // { id, file, text }: the shown document as last read (text null: no file)
+    this.edit = null;     // { id, file, original, state }: a document being edited
+    this.known = [];      // installed agents
+    this.awaiting = null; // { before, tries }: an agent was started and is not on screen yet
+    this.fields = new Map(); this.fieldsFor = undefined; this.watching = 0;
+    this.revision = shared(REVISION_KEY);
     this.newApp = InputState.new({ placeholder: "Company, Role, then Enter" });
     this.newApp.on("submit", (_e, cx) => this.addApplication(cx));
     this.repoInput = InputState.new({ placeholder: "owner/name or its address, then Enter" });
@@ -52,9 +70,11 @@ export default class JobQuest extends View {
     this.posting = TextareaState.new({ placeholder: "Paste the job posting, or just its link", rows: 6 });
     this.start(cx);
     cx.spawn(async (cx) => {
-      try { this.agents = (await knownAgents()).filter((agent) => agent.installed); } catch { this.agents = []; }
+      try { this.known = (await knownAgents()).filter((agent) => agent.installed); } catch { this.known = []; }
       cx.notify();
     });
+    cx.timer.every(1000, (cx) => this.followAgent(cx));
+    this.listen(cx);
   }
 
   // Reads the data folder and follows its changes. Called again when the folder is changed.
@@ -69,7 +89,21 @@ export default class JobQuest extends View {
           await watchFolder(this.dir);
           if (generation === this.watching) await this.reload(cx);
         }
-      } catch { /* the folder can't be watched: Refresh still works */ }
+      } catch { /* the folder can't be watched: Refresh and the revision still work */ }
+    });
+  }
+
+  // Key commands and test commands: `herdr-app do job-quest.<command>` reaches the shown copies.
+  listen(cx) {
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "refresh") await this.reload(cx);
+        else if (command.startsWith("open-")) this.select(command.slice(5), cx);
+        else if (command.startsWith("tab-")) this.show(command.slice(4), cx);
+        else if (command.startsWith("doc-")) this.showDoc(command.slice(4), cx);
+        cx.notify();
+      }
     });
   }
 
@@ -77,21 +111,41 @@ export default class JobQuest extends View {
     try {
       this.snap = await loadSnapshot(this.dir);
       this.syncFields();
+      await this.loadDoc();
     } catch (e) { this.error = `Can't read ${this.dir}: ${message(e)}`; }
     cx.notify();
   }
 
+  // Called by render: another copy saved something, or chose another application.
+  follow(cx) {
+    const revision = shared(REVISION_KEY), selected = this.selected();
+    if (revision === this.revision && selected === this.fieldsFor) return;
+    const reload = revision !== this.revision;
+    this.revision = revision; this.fieldsFor = selected;
+    cx.spawn(async (cx) => {
+      if (reload) await this.reload(cx);
+      else { if (this.snap) this.syncFields(); await this.loadDoc(); cx.notify(); }
+    });
+  }
+
+  selected() {
+    const id = shared(SELECTED_KEY);
+    return typeof id === "string" ? id : null;
+  }
+
   application() {
-    return this.snap?.applications.find((a) => a.id === this.selected) ?? null;
+    const id = this.selected();
+    return this.snap?.applications.find((a) => a.id === id) ?? null;
   }
 
   // One text field per editable value, made once and kept. When the file changes underneath,
   // a field the person has not touched follows it; one they are typing in is left alone.
   syncFields() {
     const app = this.application();
+    this.fieldsFor = this.selected();
     const wanted = [
       ...INTAKE_FIELDS.map((f) => [`intake:${f.key}`, this.snap.intake[f.key], f.hint]),
-      ...(app ? APP_FIELDS.map((f) => [`app:${app.id}:${f.key}`, app[f.key], f.hint]) : []),
+      ...(app ? APP_FIELDS.map((key) => [`app:${app.id}:${key}`, app[key], ""]) : []),
     ];
     for (const [key, value, placeholder] of wanted) {
       const field = this.fields.get(key);
@@ -106,47 +160,79 @@ export default class JobQuest extends View {
     }
   }
 
+  field(key) { return this.fields.get(key)?.state ?? null; }
+
   typed(key) {
-    const field = this.fields.get(key);
-    return field ? field.state.value().trim() : null;
+    const state = this.field(key);
+    return state ? state.value().trim() : null;
   }
 
-  // Edits run one at a time, then the folder is read again.
+  // The shown document's text, read again after every load so an agent's edit shows.
+  async loadDoc() {
+    const app = this.application(), doc = DOCS.find((d) => d.id === this.docTab) ?? DOCS[0];
+    if (!app) { this.doc = null; return; }
+    this.doc = { id: app.id, file: doc.file, text: await readDocument(this.dir, app.id, doc.file) };
+  }
+
+  // Edits run one at a time; then this copy reloads and the other copies are told to.
   mutate(cx, work) {
     const done = (this.queue ?? Promise.resolve()).then(async () => {
       try { await work(); this.error = null; } catch (e) { this.error = `Not saved: ${message(e)}`; }
     });
     this.queue = done;
-    cx.spawn(async (cx) => { await done; await this.reload(cx); });
+    cx.spawn(async (cx) => {
+      await done;
+      this.revision = Date.now();
+      setShared(REVISION_KEY, this.revision);
+      await this.reload(cx);
+    });
   }
 
   // Saves every text field at once, so Enter in one never drops what was typed in another.
   saveFields(cx) {
+    if (!this.snap) return;
     const intake = Object.fromEntries(INTAKE_FIELDS.map((f) => [f.key, this.typed(`intake:${f.key}`) ?? this.snap.intake[f.key]]));
     const app = this.application();
-    const edited = app && { ...app, ...Object.fromEntries(APP_FIELDS.map((f) => [f.key, this.typed(`app:${app.id}:${f.key}`) ?? app[f.key]])) };
+    const edited = app && { ...app, ...Object.fromEntries(APP_FIELDS.map((key) => [key, this.typed(`app:${app.id}:${key}`) ?? app[key]])) };
     this.mutate(cx, async () => {
       if (INTAKE_FIELDS.some((f) => intake[f.key] !== this.snap.intake[f.key])) await saveIntake(this.dir, intake);
-      if (edited && APP_FIELDS.some((f) => edited[f.key] !== app[f.key])) await saveApplication(this.dir, edited);
+      if (edited && APP_FIELDS.some((key) => edited[key] !== app[key])) await saveApplication(this.dir, edited);
     });
   }
 
+  // ---- what is shown
+
+  // In the layout: which child of the view stack shows. In the panel: its own tab.
+  view() {
+    return this.part === "panel" ? this.tab : findNode(layout(), VIEW_STACK)?.active ?? null;
+  }
+
   show(tab, cx) {
-    this.tab = tab; this.preview = null; remember("tab", tab); cx.notify();
+    if (this.part === "panel") { this.tab = tab; remember("tab", tab); cx.notify(); return; }
+    run("layout.select", { stack: VIEW_STACK, child: `jq-${tab}` });
   }
 
   select(id, cx) {
-    this.selected = id; this.preview = null; remember("selected", id);
-    if (this.snap) this.syncFields();
-    cx.notify();
+    this.edit = null;
+    setShared(SELECTED_KEY, id);
+    if (this.part === "panel") { this.tab = "application"; remember("tab", "application"); }
+    cx.spawn(async (cx) => { if (this.snap) this.syncFields(); await this.loadDoc(); cx.notify(); });
   }
+
+  showDoc(id, cx) {
+    if (!DOCS.some((d) => d.id === id)) return;
+    this.docTab = id; this.edit = null; remember("doc", id);
+    cx.spawn(async (cx) => { await this.loadDoc(); cx.notify(); });
+  }
+
+  // ---- applications
 
   addApplication(cx) {
     if (!this.snap) return;
     const created = newApplication(this.newApp.value(), this.snap.applications.map((a) => a.id), this.snap.today);
     if (!created) { this.error = "Write it as Company, Role"; cx.notify(); return; }
     this.newApp.set_value("");
-    this.selected = created.id; remember("selected", created.id);
+    setShared(SELECTED_KEY, created.id);
     this.mutate(cx, () => saveApplication(this.dir, created));
   }
 
@@ -160,6 +246,47 @@ export default class JobQuest extends View {
     this.posting.set_value("");
     this.mutate(cx, () => (isLink(pasted) ? saveApplication(this.dir, { ...app, url: pasted }) : savePosting(this.dir, app.id, pasted)));
   }
+
+  // ---- documents
+
+  startEdit(cx) {
+    const doc = this.doc;
+    if (!doc || doc.text === null) return;
+    const state = EditorState.new({
+      language: "markdown", value: doc.text, soft_wrap: true, line_numbers: false, folding: false,
+      font_family: settings()?.font_family, font_size: 13,
+    });
+    this.edit = { id: doc.id, file: doc.file, original: doc.text, state };
+    cx.notify();
+  }
+
+  // Saved only if the file is still what was opened; an agent's newer text is never overwritten.
+  saveEdit(cx) {
+    const edit = this.edit;
+    if (!edit) return;
+    cx.spawn(async (cx) => {
+      try {
+        await saveDocument(this.dir, edit.id, edit.file, edit.state.value(), edit.original);
+        this.edit = null; this.error = null;
+        this.revision = Date.now(); setShared(REVISION_KEY, this.revision);
+      } catch { this.error = `${edit.file} changed on disk while you were editing. Copy your text, cancel, and edit the new version.`; }
+      await this.reload(cx);
+    });
+  }
+
+  cancelEdit(cx) { this.edit = null; cx.notify(); }
+
+  openEmail(app, cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const email = await readDocument(this.dir, app.id, "email.md");
+        if (email === null) throw new Error("no email.md yet");
+        await open(mailto(email, app.contactEmail));
+      } catch (e) { this.error = `Can't open the mail app: ${message(e)}`; cx.notify(); }
+    });
+  }
+
+  // ---- profile
 
   saveDump(cx) {
     const notes = this.dump.value().trim();
@@ -175,49 +302,22 @@ export default class JobQuest extends View {
     this.mutate(cx, () => saveRepos(this.dir, addRepo(this.snap.repos, parsed)));
   }
 
+  toggleRepository(fullName, cx) {
+    this.mutate(cx, () => saveRepos(this.dir, toggleRepo(this.snap.repos, fullName)));
+  }
+
   // The person's own repositories from the GitHub CLI: no forks, nothing archived. New ones
   // start left out, so nothing is described in a document until they choose it.
   importRepos(cx) {
     this.busy = "Asking GitHub…"; cx.notify();
-    cx.spawn(async (cx) => {
+    this.mutate(cx, async () => {
       try {
         const r = await exec("gh", ["repo", "list", "--limit", "300", "--source", "--no-archived", "--json", "nameWithOwner,url,isPrivate"]);
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n")[0] || "gh failed");
         await saveRepos(this.dir, mergeRepos(this.snap.repos, parse(r.stdout)));
-        this.error = null;
-      } catch (e) { this.error = `GitHub import needs the gh CLI, signed in (gh auth login): ${message(e)}`; }
-      this.busy = null;
-      await this.reload(cx);
-    });
-  }
-
-  agent() {
-    const chosen = shared(AGENT_KEY);
-    return this.agents.find((a) => a.key === chosen) ?? this.agents.find((a) => a.key === "claude") ?? this.agents[0] ?? null;
-  }
-
-  // Starts the chosen agent in a new tab, in the data folder, with the task as its first message.
-  ask(name, task) {
-    const agent = this.agent();
-    if (!agent) { notify({ title: "No coding agent found", body: "Install one (Claude Code, Codex, ...) so Job Quest can hand it work.", level: "error" }); return; }
-    run("tab.new", { name, folder: this.dir, argv: agent.run, task });
-  }
-
-  view(app, file, title, cx) {
-    cx.spawn(async (cx) => {
-      const text = await readDocument(this.dir, app.id, file);
-      this.preview = text === null ? null : { title, text };
-      cx.notify();
-    });
-  }
-
-  openEmail(app, cx) {
-    cx.spawn(async (cx) => {
-      try {
-        const email = await readDocument(this.dir, app.id, "email.md");
-        if (email === null) throw new Error("no email.md yet");
-        await open(mailto(email, app.contactEmail));
-      } catch (e) { this.error = `Can't open the mail app: ${message(e)}`; cx.notify(); }
+      } catch (e) {
+        throw new Error(`GitHub import needs the gh CLI, signed in (gh auth login): ${message(e)}`);
+      } finally { this.busy = null; }
     });
   }
 
@@ -231,224 +331,77 @@ export default class JobQuest extends View {
     });
   }
 
-  // ---- pieces
-
-  button(id, text, onClick, t, primary = false) {
-    return h_flex().id(id).h(28).px(11).flex_none().items_center().rounded(7).cursor_pointer().text_size(12).font_medium()
-      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
-      .text_color(primary ? t.solid_foreground : t.foreground)
-      .hover((s) => s.opacity(0.88)).on_click((_e, cx) => onClick(cx)).child(text);
+  openFolder(path, cx) {
+    open(path).catch((e) => { this.error = message(e); cx.notify(); });
   }
 
-  chip(id, text, active, onClick, t) {
-    return h_flex().id(id).h(24).px(9).flex_none().items_center().rounded(6).cursor_pointer().text_size(11.5)
-      .bg(active ? t.selected : t.raised).text_color(active ? t.foreground : t.muted)
-      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => onClick(cx)).child(text);
+  // ---- agents
+
+  agent() {
+    const chosen = shared(AGENT_KEY);
+    return this.known.find((a) => a.key === chosen) ?? this.known.find((a) => a.key === "claude") ?? this.known[0] ?? null;
   }
 
-  heading(text, t, aside = "") {
-    return h_flex().pt(6).gap(8).items_center()
-      .child(div().font_semibold().text_color(t.foreground).child(text))
-      .when(Boolean(aside), (e) => e.child(div().text_size(11).text_color(t.dim).child(aside)));
+  chooseAgent(key) { setShared(AGENT_KEY, key); }
+
+  // Starts the chosen agent in a new tab, in the data folder, with the task as its first message.
+  // In the Job Quest layout its terminal is then shown beside the board (followAgent).
+  ask(name, task) {
+    const agent = this.agent();
+    if (!agent) { notify({ title: "No coding agent found", body: "Install one (Claude Code, Codex, ...) so Job Quest can hand it work.", level: "error" }); return; }
+    this.awaiting = { before: agents().map((a) => a.address), tries: 0 };
+    run("tab.new", { name, folder: this.dir, argv: agent.run, task });
   }
 
-  note(text, t, color = t.dim) {
-    return div().text_size(11.5).text_color(color).child(text);
+  // run() returns nothing, so the new agent is found by comparing agents() with before.
+  followAgent(cx) {
+    const waiting = this.awaiting;
+    if (!waiting) return;
+    const started = agents().find((a) => !waiting.before.includes(a.address));
+    if (started && findNode(layout(), AGENT_BLOCK)) {
+      run("agent.focus", { terminal: started.address });
+      run("layout.show", { id: AGENT_BLOCK });
+    }
+    if (started || (waiting.tries += 1) > 30) { this.awaiting = null; cx.notify(); }
   }
 
-  input(state, t) {
-    return div().h(30).px(9).flex().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-      .child(Input.new(state).h_full().text_size(12.5).text_color(t.foreground));
+  interview() { this.ask("Job Quest: intake", prompts.interview(this.dir)); }
+  buildMaster() { this.ask("Job Quest: master profile", prompts.buildMaster(this.dir)); }
+  summarizeRepos() { this.ask("Job Quest: projects", prompts.summarizeRepos(this.dir)); }
+
+  draft(app, kind, cx) {
+    if (app.stage === "lead") this.setStage(app, "drafting", cx);
+    this.ask(`Draft: ${app.company}`, prompts.draft(this.dir, app, kind));
   }
 
-  area(state, height, t) {
-    return div().h(height).px(9).py(6).rounded(7).border_1().border_color(t.input).bg(t.background)
-      .text_size(12.5).text_color(t.foreground).child(Textarea.new(state));
+  // Writing the email and exporting both start from the resume.
+  needsResume(app, cx) {
+    if (app.hasResume) return false;
+    this.error = "Draft a resume first"; cx.notify();
+    return true;
   }
 
-  labelled(label, key, t) {
-    const field = this.fields.get(key);
-    return v_flex().gap(3)
-      .child(div().text_size(11).text_color(t.muted).child(label))
-      .when(Boolean(field), (e) => e.child(this.input(field.state, t)));
+  writeEmail(app, cx) {
+    if (this.needsResume(app, cx)) return;
+    const contact = Object.fromEntries(["contactName", "contactEmail"].map((key) => [key, this.typed(`app:${app.id}:${key}`) ?? app[key]]));
+    this.saveFields(cx);
+    this.ask(`Email: ${app.company}`, prompts.emailDraft(this.dir, { ...app, ...contact }));
   }
 
-  row(t) { return h_flex().gap(6).flex_wrap().items_center(); }
-
-  previewBox(t) {
-    const p = this.preview;
-    return v_flex().p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.background)
-      .child(h_flex().items_center().justify_between()
-        .child(div().font_semibold().child(p.title))
-        .child(this.chip("jq-preview-close", "Close", false, (cx) => { this.preview = null; cx.notify(); }, t)))
-      .child(TextView.markdown(`jq-md-${p.title}`, p.text || "*This file is empty.*").w_full().text_size(12.5).text_color(t.foreground).selectable(true).scrollable(false));
+  exportFiles(app, cx) {
+    if (this.needsResume(app, cx)) return;
+    this.ask(`Export: ${app.company}`, prompts.exportFiles(this.dir, app));
   }
 
-  pickFirst(t) {
-    return v_flex().gap(8)
-      .child(this.note("Pick an application in Pipeline first.", t))
-      .child(this.row(t).child(this.button("jq-to-pipeline", "Go to Pipeline", (cx) => this.show("pipeline", cx), t)));
+  dismissError(cx) { this.error = null; cx.notify(); }
+
+  setWidth(size, cx) {
+    const width = Math.round(size.width / (settings()?.zoom || 1));
+    if (width !== this.width) { this.width = width; cx.notify(); }
   }
 
-  // ---- tabs
-
-  intakeTab(t) {
-    return v_flex().gap(8)
-      .child(this.heading("What you are looking for", t))
-      .child(this.note("Steers which jobs fit and how your documents are written. Enter in any field saves all of them.", t))
-      .children(INTAKE_FIELDS.map((f) => this.labelled(f.label, `intake:${f.key}`, t)))
-      .child(this.row(t)
-        .child(this.button("jq-intake-save", "Save", (cx) => this.saveFields(cx), t, true))
-        .child(this.button("jq-intake-interview", "Interview me", () => this.ask("Job Quest: intake", prompts.interview(this.dir)), t)))
-      .child(this.heading("Data folder", t))
-      .child(this.note(this.dir, t))
-      .child(this.row(t)
-        .child(this.button("jq-dir-open", "Open folder", (cx) => { open(this.dir).catch((e) => { this.error = message(e); cx.notify(); }); }, t))
-        .child(this.button("jq-dir-change", "Change…", (cx) => this.chooseFolder(cx), t)))
-      .when(this.agents.length > 0, (e) => e
-        .child(this.heading("Agent", t, "who the buttons hand work to"))
-        .child(this.row(t).children(this.agents.map((a) =>
-          this.chip(`jq-agent-${a.key}`, a.name, this.agent()?.key === a.key, () => setShared(AGENT_KEY, a.key), t)))))
-      .when(this.agents.length === 0, (e) => e.child(this.note("No coding agent is installed, so the buttons that draft and summarize can't run yet.", t, t.blocked)));
-  }
-
-  profileTab(t) {
-    const s = this.snap, included = s.repos.filter((r) => r.isIncluded), waiting = included.filter((r) => !r.summary);
-    return v_flex().gap(8)
-      .child(this.heading("Your documents", t, `${s.profileFiles.length} in profile/`))
-      .child(this.note(`Put old resumes, cover letters and notes in ${s.dir}/profile. PDF, Word, Markdown and text all work.`, t))
-      .children(s.profileFiles.map((name) => div().text_size(12).text_color(t.muted).child(`• ${name}`)))
-      .child(this.row(t).child(this.button("jq-profile-open", "Open profile folder", (cx) => { open(`${s.dir}/profile`).catch((e) => { this.error = message(e); cx.notify(); }); }, t)))
-      .child(this.heading("Word dump", t, "added to profile/notes.md"))
-      .child(this.area(this.dump, 110, t))
-      .child(this.row(t).child(this.button("jq-dump-save", "Add to notes", (cx) => this.saveDump(cx), t)))
-      .child(this.heading("Master profile", t, s.hasMaster ? "profile/master.md exists" : "not built yet"))
-      .child(this.note("One document built from everything above and your included projects. Every draft is tailored from it.", t))
-      .child(this.row(t).child(this.button("jq-master", s.hasMaster ? "Update master profile" : "Build master profile",
-        () => this.ask("Job Quest: master profile", prompts.buildMaster(s.dir)), t, true)))
-      .child(this.heading("GitHub projects", t, `${included.length} of ${s.repos.length} included`))
-      .child(this.note("Only included projects are described in your documents. Click one to include it or leave it out.", t))
-      .child(this.row(t)
-        .child(this.button("jq-repos-import", this.busy ?? "Import from GitHub", (cx) => this.importRepos(cx), t))
-        .when(waiting.length > 0, (e) => e.child(this.button("jq-repos-summarize", `Summarize included (${waiting.length})`,
-          () => this.ask("Job Quest: projects", prompts.summarizeRepos(s.dir)), t))))
-      .child(this.input(this.repoInput, t))
-      .children(s.repos.map((r) => h_flex().id(`jq-repo-${r.fullName}`).px(6).py(4).gap(8).items_center().rounded(6).cursor_pointer()
-        .hover((st) => st.bg(t.hover))
-        .on_click((_e, cx) => this.mutate(cx, () => saveRepos(s.dir, toggleRepo(s.repos, r.fullName))))
-        .child(div().size(14).flex().flex_none().items_center().justify_center().rounded(4).border_1()
-          .border_color(r.isIncluded ? t.accent : t.input).bg(r.isIncluded ? t.accent : t.background)
-          .text_size(10).text_color(t.accent_foreground).child(r.isIncluded ? "✓" : ""))
-        .child(div().flex_1().min_w(0).truncate().text_color(r.isIncluded ? t.foreground : t.muted).child(r.fullName))
-        .child(div().flex_none().text_size(11).text_color(t.dim).child([r.isPrivate && "private", r.summary && "summarized"].filter(Boolean).join(" · ")))));
-  }
-
-  pipelineTab(t) {
-    const s = this.snap, app = this.application(), due = followUpsDue(s.applications, s.today);
-    return v_flex().gap(8)
-      .child(this.heading("New application", t))
-      .child(this.input(this.newApp, t))
-      .when(due.length > 0, (e) => e.child(this.note(`Follow up due: ${due.map((a) => a.company).join(", ")}`, t, t.blocked)))
-      .when(s.applications.length === 0, (e) => e.child(this.note("No applications yet. Add one above.", t)))
-      .children(STAGES.filter((stage) => s.applications.some((a) => a.stage === stage)).map((stage) => {
-        const rows = s.applications.filter((a) => a.stage === stage);
-        return v_flex().gap(1)
-          .child(this.heading(STAGE_LABEL[stage], t, String(rows.length)))
-          .children(rows.map((a) => h_flex().id(`jq-app-${a.id}`).px(8).py(5).gap(8).items_center().rounded(6).cursor_pointer()
-            .bg(a.id === this.selected ? t.selected : t.surface).hover((st) => st.bg(t.hover))
-            .on_click((_e, cx) => this.select(a.id, cx))
-            .child(div().flex_1().min_w(0).truncate().child(nameOf(a)))
-            .child(div().flex_none().text_size(11).text_color(t.dim)
-              .child([a.hasResume && "resume", a.hasCoverLetter && "letter", a.followUpAt && `follow up ${a.followUpAt}`].filter(Boolean).join(" · ")))));
-      }))
-      .when(Boolean(app), (e) => e.child(v_flex().mt(6).p(10).gap(8).rounded(8).border_1().border_color(t.border).bg(t.background)
-        .child(div().font_semibold().child(nameOf(app)))
-        .child(this.row(t).children(STAGES.map((stage) =>
-          this.chip(`jq-stage-${stage}`, STAGE_LABEL[stage], app.stage === stage, (cx) => this.setStage(app, stage, cx), t))))
-        .child(this.labelled("Posting link", `app:${app.id}:url`, t))
-        .child(this.labelled("Follow up on", `app:${app.id}:followUpAt`, t))
-        .child(this.labelled("Notes", `app:${app.id}:notes`, t))
-        .child(this.row(t)
-          .child(this.button("jq-app-save", "Save", (cx) => this.saveFields(cx), t))
-          .child(this.button("jq-to-drafts", "Drafts", (cx) => this.show("drafts", cx), t, true))
-          .child(this.button("jq-to-submit", "Submit", (cx) => this.show("submit", cx), t)))));
-  }
-
-  draftsTab(t) {
-    const s = this.snap, app = this.application();
-    if (!app) return this.pickFirst(t);
-    const have = (yes) => (yes ? "saved" : "missing");
-    const draft = (kind) => (cx) => {
-      if (app.stage === "lead") this.setStage(app, "drafting", cx);
-      this.ask(`Draft: ${app.company}`, prompts.draft(s.dir, app, kind));
-    };
-    return v_flex().gap(8)
-      .child(this.heading(nameOf(app), t))
-      .child(this.note(`Posting: ${have(app.hasPosting)} · Resume: ${have(app.hasResume)} · Cover letter: ${have(app.hasCoverLetter)}`, t, t.muted))
-      .child(this.area(this.posting, 130, t))
-      .child(this.row(t).child(this.button("jq-posting-save", "Save posting", (cx) => this.savePostingText(app, cx), t)))
-      .when(!s.hasMaster, (e) => e.child(this.note("No master profile yet. Build one in Profile for better drafts.", t, t.blocked)))
-      .child(this.row(t)
-        .child(this.button("jq-draft-both", "Draft both", draft("both"), t, true))
-        .child(this.button("jq-draft-resume", "Resume only", draft("resume"), t))
-        .child(this.button("jq-draft-letter", "Cover letter only", draft("cover-letter"), t)))
-      .child(this.row(t)
-        .when(app.hasPosting, (e) => e.child(this.chip("jq-view-posting", "View posting", false, (cx) => this.view(app, "posting.md", "Posting", cx), t)))
-        .when(app.hasResume, (e) => e.child(this.chip("jq-view-resume", "View resume", false, (cx) => this.view(app, "resume.md", "Resume", cx), t)))
-        .when(app.hasCoverLetter, (e) => e.child(this.chip("jq-view-letter", "View cover letter", false, (cx) => this.view(app, "cover-letter.md", "Cover letter", cx), t))))
-      .when(Boolean(this.preview), (e) => e.child(this.previewBox(t)))
-      .child(this.note(`To change a draft, tell the agent what to revise, or edit the files in ${appDir(s.dir, app.id)}`, t));
-  }
-
-  submitTab(t) {
-    const s = this.snap, app = this.application();
-    if (!app) return this.pickFirst(t);
-    const have = (yes) => (yes ? "saved" : "missing");
-    const needsResume = (then) => (cx) => {
-      if (!app.hasResume) { this.error = "Draft a resume first, in Drafts"; cx.notify(); return; }
-      then(cx);
-    };
-    return v_flex().gap(8)
-      .child(this.heading(nameOf(app), t))
-      .child(this.note(`Resume: ${have(app.hasResume)} · Cover letter: ${have(app.hasCoverLetter)} · Email: ${have(app.hasEmail)}`, t, t.muted))
-      .child(this.labelled("Contact name", `app:${app.id}:contactName`, t))
-      .child(this.labelled("Contact email", `app:${app.id}:contactEmail`, t))
-      .child(this.row(t)
-        .child(this.button("jq-contact-save", "Save", (cx) => this.saveFields(cx), t))
-        .child(this.button("jq-email-write", "Write email", needsResume((cx) => {
-          const contact = { contactName: this.typed(`app:${app.id}:contactName`) ?? app.contactName, contactEmail: this.typed(`app:${app.id}:contactEmail`) ?? app.contactEmail };
-          this.saveFields(cx);
-          this.ask(`Email: ${app.company}`, prompts.emailDraft(s.dir, { ...app, ...contact }));
-        }), t, true))
-        .child(this.button("jq-export", "Export PDFs", needsResume(() => this.ask(`Export: ${app.company}`, prompts.exportFiles(s.dir, app))), t)))
-      .when(app.hasEmail, (e) => e.child(this.row(t)
-        .child(this.button("jq-email-open", "Open in mail app", (cx) => this.openEmail(app, cx), t))
-        .child(this.chip("jq-view-email", "View email", false, (cx) => this.view(app, "email.md", "Email", cx), t))))
-      .when(Boolean(this.preview), (e) => e.child(this.previewBox(t)))
-      .when(!app.appliedAt, (e) => e.child(this.row(t).child(this.button("jq-applied", "Mark as applied", (cx) => this.setStage(app, "applied", cx), t))))
-      .when(Boolean(app.appliedAt), (e) => e.child(this.note(`Applied ${app.appliedAt}${app.followUpAt ? ` · follow up ${app.followUpAt}` : ""}`, t, t.done)))
-      .child(this.note("Nothing is ever sent for you. The email opens as a draft in your mail app; you attach the files and send.", t));
-  }
-
-  body(t) {
-    if (!this.snap) return this.note("Reading the data folder…", t);
-    if (this.tab === "intake") return this.intakeTab(t);
-    if (this.tab === "profile") return this.profileTab(t);
-    if (this.tab === "drafts") return this.draftsTab(t);
-    if (this.tab === "submit") return this.submitTab(t);
-    return this.pipelineTab(t);
-  }
-
-  render() {
-    const t = theme();
-    return v_flex().id("job-quest").size_full().min_h(0).bg(t.surface).text_color(t.foreground).text_size(12.5)
-      .child(h_flex().flex_none().px(10).py(8).gap(5).flex_wrap().items_center().border_b(1).border_color(t.border)
-        .children(TABS.map(([id, label]) => this.chip(`jq-tab-${id}`, label, this.tab === id, (cx) => this.show(id, cx), t)))
-        .child(div().flex_1())
-        .child(this.chip("jq-refresh", "Refresh", false, (cx) => { cx.spawn((cx) => this.reload(cx)); }, t)))
-      .when(Boolean(this.error), (e) => e.child(h_flex().flex_none().px(12).py(6).gap(8).items_center()
-        .child(div().flex_1().min_w(0).text_size(11.5).text_color(t.ansi1).child(this.error ?? ""))
-        .child(this.chip("jq-error-close", "Dismiss", false, (cx) => { this.error = null; cx.notify(); }, t))))
-      .child(v_flex().id("jq-body").flex_1().min_h(0).overflow_y_scrollbar().px(12).py(10).child(this.body(t)));
+  render(cx) {
+    this.follow(cx);
+    return draw(this);
   }
 }

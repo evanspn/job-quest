@@ -8,6 +8,7 @@ export class Node {
 const KEPT = {
   id(node, value) { node.id_ = value; },
   on_click(node, handler) { node.click = handler; },
+  on_size_change(node, handler) { node.resize = handler; },
   child(node, child) { node.children_.push(child); },
   children(node, list) { node.children_.push(...list); },
   when(node, condition, build, proxy) { if (condition) build(proxy); },
