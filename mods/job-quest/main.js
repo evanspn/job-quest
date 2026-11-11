@@ -25,6 +25,7 @@ import {
 import {
   INTAKE_FIELDS, DOCS, parse, newApplication, withStage, parseRepo, mergeRepos, toggleRepo,
   addRepo, isLink, mailto, findNode, nextStep, minFit, jobKey, nameOf, isLive, feed, MEMBERS,
+  mentionsIn, typingMention, handlesFor,
 } from "./model.js";
 import * as party from "./party.js";
 import {
@@ -83,9 +84,8 @@ export default class JobQuest extends View {
     this.posting = TextareaState.new({ placeholder: "Paste the job posting, or just its link", rows: 6 });
     this.chatInput = InputState.new({ placeholder: "Message the party, then Enter" });
     this.chatInput.on("submit", (_e, cx) => this.sendChat(cx));
+    this.chatInput.on("change", (_e, cx) => cx.notify());
     this.chatScroll = ScrollHandle.new();
-    this.chatTo = null;   // a worker's address, "all", or null: whoever spoke last
-    this.chatReply = null; // a message from a worker that has finished: replying starts a new one
     this.chatShown = 0;   // how many chat items were drawn, to scroll to a new one
     this.token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.warned = new Set(); // applications the party has said it is stuck on
@@ -509,41 +509,57 @@ export default class JobQuest extends View {
       notify({ title: "The party is on it already", body: `Someone is working on ${nameOf(app)}; reply to them instead.`, level: "info" });
       return;
     }
-    this.chatReply = null;
     this.mutate(cx, () => saveMessage(this.dir, { from: "you", to: `a new ${member}`, appId: app?.id ?? "", text }));
     this.ask(member, "reply", app, prompts.followUp(this.dir, member, app, message.text, text));
   }
 
   chatItems() { return this.snap ? feed(this.snap.chat, this.snap.log).slice(-120) : []; }
 
-  // Who a message goes to: the chosen worker, everyone, or (by default) whoever last spoke and
-  // is still running, else the newest running worker. { all, jobs, label }.
-  chatTarget() {
-    const live = party.listeners();
-    const gone = this.chatReply && !party.senderOf(this.chatReply, live) ? this.chatReply : null;
-    if (gone) return { all: false, jobs: [], revive: gone, label: gone.from };
-    if (this.chatTo === "all") return { all: true, jobs: live, label: "everyone" };
-    let job = live.find((j) => party.agentFor(j)?.address === this.chatTo) ?? null;
-    if (!job && this.snap) {
-      for (const message of [...this.snap.chat].reverse()) {
-        if (message.from === "you") continue;
-        job = party.senderOf(message, live);
-        if (job) break;
-      }
+  // The running workers you can @mention, with their handles.
+  chatHandles() { return handlesFor(party.listeners()); }
+
+  // Who a message goes to, from its @mentions: no mention (or @everyone / @all) is everyone
+  // running. A mention of a role and application with no running worker, but an earlier
+  // message from one, starts a new worker to act on it. { everyone, jobs, revive, unknown }.
+  chatTarget(text = this.chatInput.value()) {
+    const handles = this.chatHandles(), named = mentionsIn(text);
+    if (!named.length || named.some((n) => ["everyone", "all"].includes(n))) return { everyone: true, jobs: handles.map((h) => h.job), revive: null, unknown: [] };
+    const jobs = [], unknown = [];
+    let revive = null;
+    for (const name of named) {
+      const hits = handles.filter((h) => h.handle === name || h.job.member === name || (name.includes("/") && h.handle.startsWith(name)));
+      if (hits.length) { for (const h of hits) if (!jobs.includes(h.job)) jobs.push(h.job); continue; }
+      const [member, app = ""] = name.split("/");
+      const earlier = this.snap && [...this.snap.chat].reverse().find((m) => m.from === member && (!app || m.appId.startsWith(app)));
+      if (earlier && MEMBERS[member]) revive ??= earlier;
+      else unknown.push(name);
     }
-    job ??= live[0] ?? null;
-    if (!job) return { all: false, jobs: [], label: "" };
-    return { all: false, jobs: [job], label: party.describe(job).member.name.toLowerCase() };
+    return { everyone: false, jobs, revive, unknown };
   }
 
-  chooseChatTo(target, cx) { this.chatTo = target; this.chatReply = null; cx.notify(); }
+  // The @ list: running workers whose handle starts with what is typed, and everyone.
+  mentionChoices() {
+    const typed = typingMention(this.chatInput.value());
+    if (typed === null) return null;
+    const handles = this.chatHandles().map((h) => ({ handle: h.handle, job: h.job }));
+    return [{ handle: "everyone", job: null }, ...handles].filter((c) => c.handle.startsWith(typed));
+  }
 
-  // Answering a worker's message: the reply goes to that worker, or, when it has finished, to a
-  // new worker in its role started with its message and the reply.
+  // Puts the picked handle in place of the @ being typed.
+  pickMention(handle, cx) {
+    const text = this.chatInput.value().replace(/@[\w/-]*$/, `@${handle} `);
+    this.chatInput.set_value(text);
+    this.chatInput.focus();
+    cx.notify();
+  }
+
+  // Reply on a worker's message: its handle goes at the front of the message.
   replyTo(message, cx) {
-    const job = party.senderOf(message);
-    this.chatReply = job ? null : message;
-    this.chatTo = job ? party.agentFor(job)?.address ?? null : null;
+    const live = this.chatHandles().find((h) => party.senderOf(message, [h.job]));
+    const handle = live?.handle ?? (message.appId ? `${message.from}/${message.appId.split("-")[0]}` : message.from);
+    const rest = this.chatInput.value().replace(/^(@[\w/-]+\s+)+/, "");
+    this.chatInput.set_value(`@${handle} ${rest}`);
+    this.chatInput.focus();
     cx.notify();
   }
 
@@ -552,12 +568,18 @@ export default class JobQuest extends View {
     const text = this.chatInput.value().trim();
     if (!text || !this.snap) return;
     this.chatInput.set_value("");
-    const target = this.chatTarget();
-    if (target.revive) { this.reviveFor(target.revive, text, cx); return; }
+    const target = this.chatTarget(text);
+    if (target.unknown.length) {
+      notify({ title: `Nobody is called @${target.unknown.join(", @")}`, body: "Type @ to see who is running.", level: "warning" });
+      this.chatInput.set_value(text);
+      return;
+    }
+    if (target.revive && !target.jobs.length) { this.reviveFor(target.revive, text, cx); return; }
     const job = target.jobs.length === 1 ? target.jobs[0] : null;
     const heard = target.jobs.map((j) => party.agentFor(j)?.address).filter(Boolean);
+    const to = target.everyone ? "everyone" : handlesFor(target.jobs).map((h) => `@${h.handle}`).join(" ");
     this.mutate(cx, async () => {
-      await saveMessage(this.dir, { from: "you", to: target.label || "nobody", appId: job?.appId ?? "", text });
+      await saveMessage(this.dir, { from: "you", to: to || "nobody", appId: job?.appId ?? "", text });
       const failed = [];
       for (const address of heard) { try { await party.deliver(address, text); } catch { failed.push(address); } }
       if (!heard.length) notify({ title: "Saved, but nobody heard it", body: "No worker is running. Your message is in the chat for the next one.", level: "info" });

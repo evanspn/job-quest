@@ -374,6 +374,26 @@ export function messageName(date, from) {
   return `${stamp}-${slug(from) || "you"}.json`;
 }
 
+// @mentions in a chat message: "@sage", "@sage/northwind", "@everyone". Lowercase, in order.
+export function mentionsIn(text) {
+  return [...(text ?? "").matchAll(/(?:^|\s)@([a-z0-9][\w/-]*)/gi)].map((m) => m[1].toLowerCase().replace(/[/-]+$/, ""));
+}
+
+// The mention being typed at the end of the text ("" right after "@"), else null.
+export function typingMention(text) {
+  const found = /(?:^|\s)@([\w/-]*)$/.exec(text ?? "");
+  return found ? found[1].toLowerCase() : null;
+}
+
+// Short handles for running workers: "sage/northwind", or the whole application id when two
+// workers in one role would share the short one; "scout" for a job with no application.
+export function handlesFor(jobs) {
+  const short = (job) => (job.appId ? `${job.member}/${job.appId.split("-")[0]}` : job.member);
+  const counts = new Map();
+  for (const job of jobs) counts.set(short(job), (counts.get(short(job)) ?? 0) + 1);
+  return jobs.map((job) => ({ job, handle: counts.get(short(job)) > 1 && job.appId ? `${job.member}/${job.appId}` : short(job) }));
+}
+
 // The chat with the party's log woven in: messages and events in time order.
 export function feed(messages, log) {
   const events = log.map((e, i) => ({ id: `log-${i}-${e.at}`, at: e.at, from: "party", to: "", appId: e.appId ?? "", text: e.text, event: true }));

@@ -86,7 +86,7 @@ Rules that keep this sound:
 ## The party chat
 
 - Workers write one JSON file a message into `chat/` (named `<YYYYMMDD-HHMMSS>-<member>.json`, `{ at, from, appId, text }`); every briefing says how (`chatHowTo` in `prompts.js`). The person's messages are saved the same way (`saveMessage`, `from: "you"`) and typed into the chosen workers' terminals with `hc send` as `[Chat] …` (`party.deliver`).
-- `feed()` weaves `log.jsonl` into the chat as events. The default recipient is the running worker who last spoke (`senderOf`), else the newest running one. The leader toasts each new worker message once (`v.chatSeen`).
+- `feed()` weaves `log.jsonl` into the chat as events. Recipients come only from @mentions (`mentionsIn`, `handlesFor`, `chatTarget` in `main.js`): none or `@everyone` is every running worker; an unknown name sends nothing; a role/application with no running worker but an earlier message starts a reply worker. Typing `@` shows `mentionChoices()` over the field. The leader toasts each new worker message once (`v.chatSeen`).
 
 ## Data folder
 

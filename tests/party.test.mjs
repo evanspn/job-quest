@@ -403,30 +403,54 @@ test("the chat reads the workers' message files, skips broken ones, and weaves i
   assert.ok(find(view.render(cx), "jq-chat-1"));
 });
 
-test("a reply goes to whoever spoke last, is saved, and is typed into their terminal", async () => {
-  const sage = { ...party.newJob({ key: "a", member: "sage", kind: "research", appId: "acme" }), state: "waiting", address: "t1" };
-  const scribe = { ...party.newJob({ key: "b", member: "scribe", kind: "draft", appId: "beta" }), state: "working", address: "t2" };
+test("@ lists who is running; a mention picks who hears it; no mention is everyone", async () => {
+  const sage = { ...party.newJob({ key: "a", member: "sage", kind: "research", appId: "acme-ai-engineer" }), state: "waiting", address: "t1" };
+  const scribe = { ...party.newJob({ key: "b", member: "scribe", kind: "draft", appId: "beta-dev" }), state: "working", address: "t2" };
   party.saveJobs([sage, scribe]);
   world.running = [{ address: "t1", tab: "tab1", tab_name: sage.tab, status: "idle" }, { address: "t2", tab: "tab2", tab_name: scribe.tab, status: "working" }];
-  await post("20261111-100000-sage.json", { at: "2026-11-11T10:00:00Z", from: "sage", appId: "acme", text: "Which address?" });
   const view = await copy("chat");
-  assert.equal(view.chatTarget().label, "sage", "the last speaker, not the newest worker");
 
-  view.chatInput.type("Use jobs@acme.com");
+  // Typing @ shows everyone and each running worker; typing more filters.
+  view.chatInput.type("@");
+  assert.deepEqual(view.mentionChoices().map((c) => c.handle), ["everyone", "scribe/beta", "sage/acme"]);
+  view.chatInput.type("Hey @sa");
+  assert.deepEqual(view.mentionChoices().map((c) => c.handle), ["sage/acme"]);
+  find(view.render(cx), "jq-mention-0").click({}, cx);
+  assert.equal(view.chatInput.value(), "Hey @sage/acme ");
+  view.chatInput.type("@sage/acme use jobs@acme.com");
+  assert.equal(view.mentionChoices(), null, "the list closes once a space follows");
+  assert.deepEqual(view.chatTarget().jobs.map((j) => j.key), ["a"], "an email address is not a mention");
+
   view.chatInput.submit(cx);
-  await until(() => (world.hcs ?? []).length === 1, "the delivery");
-  assert.deepEqual(world.hcs[0], ["send", "t1", "[Chat] Use jobs@acme.com"]);
-  await until(() => view.snap.chat.some((m) => m.from === "you"), "the saved reply");
-  const mine = view.snap.chat.find((m) => m.from === "you");
-  assert.equal(mine.to, "sage");
-  assert.equal(mine.appId, "acme");
+  await until(() => world.hcs.length === 1, "the delivery");
+  assert.deepEqual(world.hcs[0], ["send", "t1", "[Chat] @sage/acme use jobs@acme.com"]);
+  await until(() => view.snap.chat.some((m) => m.from === "you"), "the saved message");
+  assert.equal(view.snap.chat.find((m) => m.from === "you").to, "@sage/acme");
 
-  // Everyone: both terminals.
-  find(view.render(cx), "jq-chat-to-all").click({}, cx);
+  // No mention: everyone running.
   view.chatInput.type("Wrap up by noon");
+  assert.equal(view.chatTarget().everyone, true);
   view.chatInput.submit(cx);
   await until(() => world.hcs.length === 3, "both deliveries");
   assert.deepEqual(world.hcs.slice(1).map((a) => a[1]).sort(), ["t1", "t2"]);
+
+  // A name nobody has: nothing is sent, the text stays.
+  view.chatInput.type("@coach hello");
+  view.chatInput.submit(cx);
+  assert.equal(world.hcs.length, 3);
+  assert.equal(view.chatInput.value(), "@coach hello");
+  assert.ok(world.notices.some((n) => /Nobody is called @coach/.test(n.title)));
+});
+
+test("Reply puts the worker's handle in the message", async () => {
+  const sage = { ...party.newJob({ key: "a", member: "sage", kind: "research", appId: "acme-ai-engineer" }), state: "waiting", address: "t1" };
+  party.saveJobs([sage]);
+  world.running = [{ address: "t1", tab: "tab1", tab_name: sage.tab, status: "idle" }];
+  await post("20261111-100000-sage.json", { at: "2026-11-11T10:00:00Z", from: "sage", appId: "acme-ai-engineer", text: "Which address?" });
+  const view = await copy("chat");
+  view.chatInput.type("thanks");
+  find(view.render(cx), "jq-chat-0-reply").click({}, cx);
+  assert.equal(view.chatInput.value(), "@sage/acme thanks");
 });
 
 test("a worker's new message is toasted once, by the copy running the party", async () => {
@@ -452,20 +476,19 @@ test("every worker is told how to use the chat", () => {
   }
 });
 
-test("replying to a worker that has finished starts a new one with its message and your answer", async () => {
+test("mentioning a worker that has finished starts a new one with its message and yours", async () => {
   await seed("northwind", { "application.json": JSON.stringify({ company: "Northwind", role: "FDE", stage: "drafting" }), "research.md": "r\n", "posting.md": "p\n" });
   await post("20261111-120000-sage.json", { at: "2026-11-11T12:00:00Z", from: "sage", appId: "northwind", text: "No contact email is published." });
   const view = await copy("chat");
   find(view.render(cx), "jq-chat-0-reply").click({}, cx);
+  assert.equal(view.chatInput.value(), "@sage/northwind ");
+  view.chatInput.type("@sage/northwind Use jobs@northwind.xyz");
   assert.equal(view.chatTarget().revive.from, "sage");
-  assert.ok(find(view.render(cx), "jq-chat-to-revive"));
-  view.chatInput.type("Use jobs@northwind.xyz");
   view.chatInput.submit(cx);
   const started = world.ran.find((r) => r.name === "tab.new" || r.name === "space.new");
-  assert.match(started.args.task, /An earlier Sage, working on FDE at Northwind, posted: "No contact email is published\." I replied: "Use jobs@northwind\.xyz"/);
-  assert.match(started.args.task, /contactEmail/);
+  assert.match(started.args.task, /An earlier Sage, working on FDE at Northwind, posted: "No contact email is published\." I replied: "@sage\/northwind Use jobs@northwind\.xyz"/);
   const [job] = party.jobs();
   assert.deepEqual([job.member, job.kind, job.appId], ["sage", "reply", "northwind"]);
-  await until(() => view.snap.chat.some((m) => m.from === "you" && m.to === "a new sage"), "the saved reply");
-  assert.equal(world.hcs?.length ?? 0, 0, "nothing typed into a terminal that is gone");
+  await until(() => view.snap.chat.some((m) => m.from === "you" && m.to === "a new sage"), "the saved message");
+  assert.equal(world.hcs.length, 0, "nothing typed into a terminal that is gone");
 });

@@ -11,7 +11,7 @@ class TextState {
   focus() {}
   set_auto_grow() {}
   // For tests: what the person does.
-  type(text) { this.text = text; }
+  type(text) { this.text = text; this.handlers.change?.({}, { notify() {} }); }
   submit(cx) { this.handlers.submit?.({}, cx); }
 }
 
