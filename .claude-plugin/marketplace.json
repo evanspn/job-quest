@@ -1,5 +1,0 @@
-{
-  "name": "job-quest",
-  "owner": { "name": "evanspn" },
-  "plugins": [{ "name": "job-quest", "source": "./" }]
-}

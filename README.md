@@ -1,43 +1,42 @@
 # Job Quest
 
-A mod for Claude Code and the Claude desktop app: a tabbed job-search workspace that sits beside the chat. It tracks applications, drafts tailored resumes and cover letters, and prepares application emails. Everything it knows is kept as plain files in a folder on your computer.
+A mod for the [Herdr](https://herdr.dev) desktop app: a job-search workspace in a side panel. It tracks applications, has a coding agent draft tailored resumes and cover letters, and prepares application emails. Everything it knows is plain files in a folder on your computer.
 
 ## Install
 
-At the prompt of a terminal session:
+Ask an agent inside Herdr:
 
-```
-/plugin install job-quest --marketplace evanspn/job-quest
-```
+> Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/evanspn/job-quest
 
-From a shell:
+Or by hand:
 
-```
-claude plugin install job-quest --marketplace evanspn/job-quest
-```
+1. Copy `mods/job-quest/` to `~/.config/herdr-app/mods/job-quest/`.
+2. Optionally merge `keys.json` into `~/.config/herdr-app/keys.json` (Ctrl+Shift+J opens the panel as a window).
+3. Run `herdr-app check ~/.config/herdr-app/mods/job-quest`.
 
-In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `evanspn/job-quest`, then Add plugin.
+The first time Herdr sees the folder it docks the panel on the right of the shown layout.
 
-Open the panel with `/job-quest`.
+**Before you install:** the mod runs programs (`gh` to list your repositories, your system's opener for folders and the mail app), starts coding agents in new tabs, and reads and writes files in its data folder. It makes no network requests of its own.
 
 ## The tabs
 
 | Tab | What it does |
 | --- | --- |
-| Intake | What you are looking for: roles, level, work mode, locations, salary floor, stack, company stage, deal-breakers. Fill the form, or press **Interview me in chat**. |
+| Intake | What you are looking for: roles, level, work mode, locations, salary floor, stack, company stage, deal-breakers. Fill the form, or press **Interview me**. Also where you pick the data folder and the agent. |
 | Profile | Your source material. Drop old resumes, cover letters or notes into the `profile` folder, paste a word dump, and choose which GitHub projects may be described. **Build master profile** turns it all into one document that drafts are tailored from. |
 | Pipeline | Every application grouped by stage, with a posting link, notes and a follow-up date. |
-| Drafts | Paste a posting (or its link) and have Claude draft a tailored resume, cover letter or both. Preview each in the panel. |
-| Submit | For companies that take applications by email: Claude writes the email and creates a Gmail draft for you to review and send. Also exports PDFs and marks the application as applied. |
+| Drafts | Paste a posting (or its link) and have an agent draft a tailored resume, cover letter or both. Preview each in the panel. |
+| Submit | For companies that take applications by email: an agent writes the email, and **Open in mail app** opens it as a draft for you to attach files and send. Also exports PDFs and marks the application as applied. |
 
-The buttons that say Claude does something hand a prompt to the chat. You see the work happen there and can steer it. The panel re-reads the folder when the turn ends.
+Buttons that need judgement start your coding agent in a new Herdr tab, in the data folder, with the task as its first message. You watch and steer it there. The panel re-reads the folder whenever a file changes.
 
 ## Where your data lives
 
-In `~/job-quest-data` by default. Change it with the **Data folder** option in `/config`. Nothing is stored in this repository.
+In `~/job-quest-data` by default. Change it in the Intake tab. Keep it inside your home folder. Nothing is stored in this repository.
 
 ```
 job-quest-data/
+  AGENTS.md  CLAUDE.md       what agents started here are told (written by the panel)
   intake.json                what you are looking for
   repos.json                 GitHub projects and whether each is included
   profile/                   your documents, notes.md, master.md
@@ -51,16 +50,15 @@ The three guides are written on first run and are yours to edit. Drafts follow w
 
 ## What it needs
 
-- **GitHub**, to list and read your repositories. Without it, add repositories by address in the Profile tab.
-- **Gmail**, to create email drafts. Without it, the email is saved as `email.md` for you to copy.
+- **A coding agent** Herdr knows how to start (Claude Code, Codex, ...), for drafting, summarizing and the interview.
+- **The GitHub CLI** (`gh`, signed in) to import your repositories. Without it, add repositories by address.
 
-The mod never sends email and never invents experience: drafting prompts tell Claude to use only what your files say and to report gaps to you.
+The mod never sends email and never submits an application. Drafting prompts tell the agent to use only what your files say and to report gaps to you.
 
 ## Developing
 
 ```
-claude plugin validate .
-claude plugin test .
+npm test
 ```
 
-Run from a checkout with `claude --plugin-dir .`.
+runs the data rules and the panel's logic against stand-ins for Herdr's modules. It does not prove the UI draws: for that, copy the mod into `~/.config/herdr-app/mods/` and run `herdr-app check` there, then look at it in the app. `.claude/skills/` holds notes for agents working on this repo, and `RECIPE.md` is the brief to rebuild the mod from scratch.
