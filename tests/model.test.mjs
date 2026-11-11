@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   toIntake, toRepos, toApplication, stored, newApplication, withStage, followUpsDue, parseRepo,
   mergeRepos, toggleRepo, addRepo, appendNotes, isLink, mailto, addDays, parse, APPLICATION_KEYS,
+  parseEmail, splitAddress,
 } from "../mods/job-quest/model.js";
+import { composeArgs } from "../mods/job-quest/mail.js";
 import * as prompts from "../mods/job-quest/prompts.js";
 
 const today = "2026-11-11";
@@ -108,6 +110,22 @@ test("prompts name the files to read and write by absolute path", () => {
   assert.ok(prompts.draft(dir, { ...row, hasPosting: false, url: "https://x.example/job" }, "both").includes("Fetch the posting from https://x.example/job"));
   assert.ok(prompts.draft(dir, { ...row, hasPosting: false }, "both").includes("Ask me to paste it"));
   assert.ok(prompts.emailDraft(dir, row).includes("Do not send anything"));
-  assert.ok(prompts.emailDraft(dir, { ...row, contactEmail: "jobs@acme.com" }).includes("Address it to jobs@acme.com"));
+  assert.ok(prompts.emailDraft(dir, { ...row, contactEmail: "jobs@acme.com" }).includes("It goes to jobs@acme.com"));
   assert.ok(prompts.agentsFile(dir).includes("Never send an email"));
+});
+
+test("email.md's headers give the address, sender, subject and attachments", () => {
+  const md = "To: Jane Doe <jane@acme.com>\nFrom: Me <me@x.com>\nSubject: Dev role\nAttachments: Me-Resume.pdf, Me-Cover-Letter.pdf\n\nHi Jane,\n\nBody.\n";
+  const email = parseEmail(md);
+  assert.equal(email.subject, "Dev role");
+  assert.deepEqual(email.attachments, ["Me-Resume.pdf", "Me-Cover-Letter.pdf"]);
+  assert.equal(email.body, "Hi Jane,\n\nBody.");
+  assert.deepEqual(splitAddress(email.to), { name: "Jane Doe", address: "jane@acme.com" });
+  assert.deepEqual(splitAddress("jobs@acme.com"), { name: "", address: "jobs@acme.com" });
+  assert.match(mailto(md), /^mailto:jane%40acme\.com\?subject=Dev%20role&body=Hi%20Jane/);
+
+  const args = composeArgs(md, "/apps/acme", ["Me-Resume.pdf", "Me-Cover-Letter.pdf"]);
+  assert.deepEqual(args.slice(-7), ["Jane Doe", "jane@acme.com", "Me <me@x.com>", "Dev role", "Hi Jane,\n\nBody.", "/apps/acme/Me-Resume.pdf", "/apps/acme/Me-Cover-Letter.pdf"]);
+  assert.throws(() => composeArgs(md, "/apps/acme", ["Me-Resume.pdf"]), /Me-Cover-Letter\.pdf/);
+  assert.throws(() => composeArgs("Subject: x\n\nbody", "/a", []), /no To/);
 });

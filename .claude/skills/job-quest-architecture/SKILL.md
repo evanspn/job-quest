@@ -24,10 +24,14 @@ column root
       row jq-pipeline
         jq-board    mod part "board": applications as columns by stage
         jq-detail   mod part "detail", 520 px: the selected application
+      jq-party      mod part "party": roster, approvals, adventure log
       jq-profile    mod part "profile"
       jq-intake     mod part "intake"
-      jq-terminals  { tab: active }: the person's terminals and agents
+      jq-terminals  column: jq-term-tabs (mod part "tabs": a tab per data-folder terminal)
+                    over jq-term-view { agent: focused }; jq-agent is hidden while it shows
+    jq-chat         mod part "chat", 380 px: the party chat (layout.toggle jq-chat)
     jq-agent        { agent: focused }, 520 px, hidden until an agent is started
+    jq-rail         mod part "rail", 78 px: a tile per party agent; click swaps jq-agent to it
   jq-status     Herdr's workspace-status
 ```
 
@@ -44,7 +48,9 @@ column root
 | `mods/job-quest/ui.js` | Shared pieces: button, chip, heading, input, area, card, scroller |
 | `mods/job-quest/model.js` | Shapes and rules, no Herdr imports |
 | `mods/job-quest/store.js` | Every read and write of the data folder |
-| `mods/job-quest/prompts.js` | Each agent task, and the `AGENTS.md` written into the data folder |
+| `mods/job-quest/prompts.js` | Each agent task (the buttons' and the party members'), and the `AGENTS.md` written into the data folder |
+| `mods/job-quest/party.js` | The party: the leader's round (follow jobs, move stages, start members), the lease, showing and cycling agents |
+| `mods/job-quest/party-views.js` | The rail, the Party view, and the party's pieces on the bar, board and detail |
 | `mods/job-quest/guides.js` | Resume, cover letter and email guides written on first run |
 | `keys.json` | Ctrl+Shift+J switches to the layout |
 | `tests/` | `model.test.mjs`, `panel.test.mjs`, and `stubs/` standing in for Herdr's modules |
@@ -65,6 +71,23 @@ Rules that keep this sound:
 - A document edit (`saveEdit`) passes the text it opened as `expected`. A rejection means an agent wrote meanwhile: the error says so and the person's text stays in the editor.
 - `ask()` records `agents()` and starts the agent; `followAgent`, on a one-second timer, focuses the new agent and shows `jq-agent` once it appears.
 
+## The party
+
+- **Files decide.** `nextStep(app)` in `model.js` reads an application's stage and which files exist (and `review.md`'s `Verdict:`/`Round:` lines) and names the next member, a stage to move to, or why it is stuck. `jobDone(job, app)` says whether a job's output is on disk. Both are pure and tested.
+- **One leader.** The `rail` copy (or the standalone `panel`) runs `party.round` every 3 s while it holds `job-quest.leader`, a lease renewed every 5 s and taken over after 15 s. Only the leader starts jobs, moves stages, closes finished tabs and appends `log.jsonl`.
+- **Jobs live in shared state** (`job-quest.party`), merged by key on every write so the leader and a button in another copy never drop each other's jobs. A job's agent is found in `agents()` by its tab name, then by address. Its state: starting → working ↔ waiting (blocked, or idle without its file) → done | failed.
+- **No loops.** A job key (member, kind, application, review round) is tried once; a failed step waits for **Start the … now** (`runNext`). At most `MAX_PARTY` live jobs; one job per application.
+- **One space.** Every job, automatic or from a button, starts in the "Job Quest" space (`space.new` the first time, then back to the person's space), Claude Code with `--permission-mode auto`. Each round the leader renames an old "Job Quest party" space, makes one `tab.move` toward needs-you → working → starting → finished (`nextMove`), closes finished tabs after 90 s and stale ones (a party job waiting 20 min, or stopped unfinished) after 20 min, never the shown one.
+- **Gates.** `nextStep` stops an application after research with no `posting.md` or no valid `contactEmail`; the Herald's job is done only when `email.md` has a To: address and every `Attachments:` file exists (`emailReady`). `mail.js` turns `email.md` into a Mail.app compose (osascript, values as arguments).
+- `job-quest.autopilot` (false: off), `job-quest.shown` (the address last put in the agent block).
+
+**Add a member or step.** A `MEMBERS` entry and a `DOING` word in `model.js`; the step in `nextStep` and its check in `jobDone`; its prompt in `prompts.js` and its case in `forJob`, naming the file that means done; a test in `tests/party.test.mjs`.
+
+## The party chat
+
+- Workers write one JSON file a message into `chat/` (named `<YYYYMMDD-HHMMSS>-<member>.json`, `{ at, from, appId, text }`); every briefing says how (`chatHowTo` in `prompts.js`). The person's messages are saved the same way (`saveMessage`, `from: "you"`) and typed into the chosen workers' terminals with `hc send` as `[Chat] …` (`party.deliver`).
+- `feed()` weaves `log.jsonl` into the chat as events. The default recipient is the running worker who last spoke (`senderOf`), else the newest running one. The leader toasts each new worker message once (`v.chatSeen`).
+
 ## Data folder
 
 ```
@@ -74,10 +97,14 @@ intake.json                  { roles, seniority, workMode, locations, salaryMin,
 repos.json                   [{ fullName, url, isPrivate, isIncluded, summary }]
 profile/                     the person's documents; notes.md (word dump); master.md
 guides/                      resume-guide.md, cover-letter-guide.md, email-guide.md
+targets.json                 [{ company, careers, ats, slug }]  the Scout's watchlist
+reports/scout-<date>.md      a Scout's search; its existence ends the Scout's job
+log.jsonl                    { at, member, appId, text } a line; the leader appends
+.claude/settings.json        Claude Code permissions for agents here, written once
 applications/<id>/
   application.json           { id, company, role, url, stage, contactName, contactEmail,
-                               appliedAt, followUpAt, notes, createdAt, updatedAt }
-  posting.md  resume.md  cover-letter.md  email.md
+                               appliedAt, followUpAt, notes, fit, source, createdAt, updatedAt }
+  posting.md  research.md  resume.md  cover-letter.md  review.md  email.md  followup.md  prep.md
 ```
 
 Dates are `YYYY-MM-DD`. `stage` is one of lead, drafting, ready, applied, interview, offer, rejected, closed. Whether a document exists is read from the folder listing, never stored. The schema is written in `model.js` (coercions, `APPLICATION_KEYS`, `INTAKE_FIELDS`, `DOCS`) and in `agentsFile` in `prompts.js`; keep them agreeing. `AGENTS.md` is rewritten on every start; guides only when missing.

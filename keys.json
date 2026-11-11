@@ -1,5 +1,11 @@
 {
   "global": {
     "ctrl-shift-j": "layout.switch:job-quest"
+  },
+  "layout:job-quest": {
+    "cmd-alt-5": "job-quest.tab-party",
+    "cmd-alt-.": "job-quest.party-next",
+    "cmd-alt-,": "job-quest.party-prev",
+    "cmd-alt-6": "layout.toggle:jq-chat"
   }
 }

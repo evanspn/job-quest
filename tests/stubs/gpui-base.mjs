@@ -22,3 +22,5 @@ export const Editor = { new: (state) => element("editor", state) };
 export const Input = { new: (state) => element("input", state) };
 export const Textarea = { new: (state) => element("textarea", state) };
 export const TextView = { markdown: (id, text) => element("markdown").id(id).child(text) };
+
+export const ScrollHandle = { new: () => ({ scrolled: [], scroll_to_item(i) { this.scrolled.push(i); }, release() { return true; } }) };

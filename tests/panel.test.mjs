@@ -54,6 +54,7 @@ beforeEach(async () => {
   forgetCopies();
   const home = await mkdtemp(join(tmpdir(), "job-quest-"));
   Object.assign(world, { home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [],
+    spaces: [{ id: "s1", name: "~", active: true, machine: null, tabs: [] }, { id: "jq", name: "Job Quest", active: false, machine: null, tabs: [] }],
     agents: [{ key: "claude", name: "Claude Code", run: ["claude"], installed: true }, { key: "codex", name: "Codex", run: ["codex"], installed: false }] });
   dir = join(home, "job-quest-data");
   globalThis.localStorage = { getItem: () => null, setItem() {} };
@@ -69,9 +70,9 @@ test("the layout places parts this mod draws, under the ids it drives", () => {
   };
   visit(LAYOUT);
   assert.equal(new Set(ids).size, ids.length, "node ids are unique");
-  assert.deepEqual(parts.sort(), ["bar", "board", "detail", "intake", "profile"]);
+  assert.deepEqual(parts.sort(), ["bar", "board", "chat", "detail", "intake", "party", "profile", "rail", "tabs"]);
   for (const part of parts) assert.ok(PARTS.includes(part));
-  for (const id of [VIEW_STACK, AGENT_BLOCK, "jq-pipeline", "jq-profile", "jq-intake", "jq-terminals"]) assert.ok(ids.includes(id), id);
+  for (const id of [VIEW_STACK, AGENT_BLOCK, "jq-pipeline", "jq-party", "jq-profile", "jq-intake", "jq-terminals", "jq-term-tabs", "jq-term-view", "jq-chat", "jq-rail"]) assert.ok(ids.includes(id), id);
 });
 
 test("first run writes the guides and the agents' instructions, and never overwrites a guide", async () => {
@@ -111,7 +112,8 @@ test("in the panel, an application goes from a new card to a drafting agent to a
   assert.equal(world.ran.length, 1);
   const { name, args } = world.ran[0];
   assert.equal(name, "tab.new");
-  assert.deepEqual(args.argv, ["claude"]);
+  assert.deepEqual(args.argv, ["claude", "--permission-mode", "auto"]);
+  assert.equal(args.space, "jq", "in the Job Quest space");
   assert.equal(args.folder, dir);
   assert.ok(args.task.includes(`${dir}/${app}/resume.md`));
   await until(async () => (await json(`${app}/application.json`)).stage === "drafting", "the drafting stage");
@@ -308,21 +310,22 @@ test("a draft command from keys starts one agent, from the copy that draws the a
   await until(async () => (await json("applications/acme-backend-engineer/application.json")).stage === "drafting", "the card to move to Drafting");
 });
 
-test("an agent stopped at a first-run question is shown in Terminals until it starts", async () => {
+test("an agent stopped at a first-run question is peeked at until it starts, then shown", async () => {
   world.layout = LAYOUT;
   const intake = await copy("intake");
   click(intake, "jq-intake-interview");
   // The program runs but is not an agent yet: it is asking whether to trust the folder.
   world.terminals = [{ address: "t9" }];
   for (let i = 0; i < 3; i += 1) intake.followAgent(cx);
-  assert.deepEqual(world.ran.at(-1), { name: "layout.select", args: { stack: "jq-view", child: "jq-terminals" } });
+  assert.deepEqual(world.ran.at(-1), { name: "terminal.peek", args: { terminal: "t9" } });
   for (let i = 0; i < 60; i += 1) intake.followAgent(cx);
+  assert.equal(world.ran.filter((r) => r.name === "terminal.peek").length, 1, "peeked once");
   assert.ok(intake.awaiting, "still waiting while the person answers");
   // Answered: it reports a status, so it is an agent now.
   world.terminals = []; world.running = [{ address: "t9" }];
   world.layout = { ...LAYOUT, children: LAYOUT.children.map((c) => c) };
   intake.followAgent(cx);
-  assert.deepEqual(world.ran.filter((r) => r.name !== "layout.select" || r.args.child !== "jq-terminals").slice(1), [
+  assert.deepEqual(world.ran.filter((r) => r.name !== "terminal.peek").slice(1), [
     { name: "agent.focus", args: { terminal: "t9" } },
     { name: "layout.show", args: { id: "jq-agent" } },
   ]);

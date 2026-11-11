@@ -3,13 +3,16 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Editor, TextView } from "gpui-base";
 import { theme, run } from "herdr";
-import { STAGES, STAGE_LABEL, INTAKE_FIELDS, DOCS, columns, followUpsDue, nameOf } from "./model.js";
+import { STAGES, STAGE_LABEL, INTAKE_FIELDS, DOCS, columns, followUpsDue, nameOf, fitOf } from "./model.js";
+import * as party from "./party.js";
+import { rarity, jobLine, partySummary, partyStatus, rail, partyBody, terminalTabs } from "./party-views.js";
+import { chatPanel } from "./chat-views.js";
 import { button, chip, heading, note, row, input, area, labelled, card, scroller } from "./ui.js";
 
 // From this width the board draws columns side by side; under it, groups one above another.
 const WIDE = 700;
-const PANEL_TABS = [["pipeline", "Pipeline"], ["application", "Application"], ["profile", "Profile"], ["intake", "Intake"]];
-const LAYOUT_VIEWS = [["pipeline", "Pipeline"], ["profile", "Profile"], ["intake", "Intake"], ["terminals", "Terminals"]];
+const PANEL_TABS = [["pipeline", "Pipeline"], ["application", "Application"], ["party", "Party"], ["chat", "Chat"], ["profile", "Profile"], ["intake", "Intake"]];
+const LAYOUT_VIEWS = [["pipeline", "Pipeline"], ["party", "Party"], ["profile", "Profile"], ["intake", "Intake"], ["terminals", "Terminals"]];
 
 const have = (yes) => (yes ? "saved" : "missing");
 
@@ -37,8 +40,11 @@ function bar(v, t) {
     .child(div().pr(8).font_semibold().child("Job Quest"))
     .children(LAYOUT_VIEWS.map(([id, label]) => chip(`jq-view-${id}`, label, view === `jq-${id}`, (cx) => v.show(id, cx), t)))
     .child(div().flex_1())
+    .child(partySummary(v, t))
+    .child(chip("jq-autopilot", party.autopilot() ? "⚔ Autopilot on" : "Autopilot off", party.autopilot(), () => v.toggleAutopilot(), t))
     .when(v.starting(), (e) => e.child(note("Starting agent…", t, t.working)))
     .when(Boolean(agent), (e) => e.child(note(`Agent: ${agent.name}`, t)))
+    .child(chip("jq-chat-toggle", "Chat", false, () => run("layout.toggle", { id: "jq-chat" }), t))
     .child(chip("jq-agent-toggle", "Agent pane", false, () => run("layout.toggle", { id: "jq-agent" }), t))
     .child(chip("jq-refresh", "Refresh", false, (cx) => { cx.spawn((cx) => v.reload(cx)); }, t))
     .child(chip("jq-leave", "Back to Herdr", false, () => run("layout.switch", { name: "main" }), t));
@@ -50,11 +56,14 @@ function appCard(v, t, a) {
   const selected = a.id === v.selected();
   const facts = [a.hasResume && "resume", a.hasCoverLetter && "letter", a.hasEmail && "email"].filter(Boolean).join(" · ");
   const due = a.stage === "applied" && a.followUpAt && a.followUpAt <= v.snap.today;
+  const working = v.jobOn(a);
   return v_flex().id(`jq-app-${a.id}`).p(9).gap(3).rounded(8).cursor_pointer().border_1()
     .border_color(selected ? t.accent : t.border).bg(selected ? t.selected : t.background)
     .hover((s) => s.bg(t.hover)).on_click((_e, cx) => v.select(a.id, cx))
     .child(div().font_medium().truncate().child(a.company))
     .when(Boolean(a.role), (e) => e.child(div().text_size(11.5).text_color(t.muted).truncate().child(a.role)))
+    .when(fitOf(a) !== null, (e) => e.child(div().text_size(11).text_color(rarity(fitOf(a), t).color).child(`${rarity(fitOf(a), t).name} · fit ${fitOf(a)}`)))
+    .when(Boolean(working), (e) => e.child(jobLine(v, t, working, `jq-app-job-${a.id}`)))
     .when(Boolean(facts), (e) => e.child(div().text_size(11).text_color(t.dim).child(facts)))
     .when(Boolean(a.followUpAt), (e) => e.child(div().text_size(11).text_color(due ? t.blocked : t.dim).child(`Follow up ${a.followUpAt}`)));
 }
@@ -105,7 +114,18 @@ function documentBox(v, t, app) {
       .child(row().child(button("jq-posting-save", "Save posting", (cx) => v.savePostingText(app, cx), t)));
   }
   if (doc.id === "email") return missing.child(note("No email yet. Write email has your agent draft one from the posting and your resume.", t));
+  if (["research", "review", "followup", "prep"].includes(doc.id)) return missing.child(note(`No ${doc.label.toLowerCase()} yet. The party writes it when the application reaches that step.`, t));
   return missing.child(note(`No ${doc.label.toLowerCase()} yet. Use the Draft buttons above.`, t));
+}
+
+// Who the email goes to and what it carries, from email.md's headers.
+function emailLine(app, t) {
+  const missing = app.missingAttachments ?? [];
+  const parts = [
+    app.emailTo ? `To ${app.emailTo}` : "No To: line",
+    app.attachments?.length ? `attached: ${app.attachments.map((f) => (missing.includes(f) ? `${f} (missing)` : f)).join(", ")}` : "no attachments named",
+  ];
+  return note(parts.join(" · "), t, !app.emailTo || missing.length || !app.attachments?.length ? t.blocked : t.done);
 }
 
 function detailBody(v, t) {
@@ -115,6 +135,7 @@ function detailBody(v, t) {
   return scroller("jq-detail-body")
     .child(div().text_size(15).font_semibold().child(nameOf(app)))
     .child(row().children(STAGES.map((stage) => chip(`jq-stage-${stage}`, STAGE_LABEL[stage], app.stage === stage, (cx) => v.setStage(app, stage, cx), t))))
+    .child(partyStatus(v, t, app))
     .when(Boolean(app.appliedAt), (e) => e.child(note(`Applied ${app.appliedAt}${app.followUpAt ? ` · follow up ${app.followUpAt}` : ""}`, t, t.done)))
     .child(field("Posting link", "url"))
     .child(h_flex().gap(8)
@@ -132,7 +153,9 @@ function detailBody(v, t) {
     .child(heading("Submit", t, "nothing is ever sent for you"))
     .child(row()
       .child(button("jq-email-write", "Write email", (cx) => v.writeEmail(app, cx), t))
-      .when(app.hasEmail, (e) => e.child(button("jq-email-open", "Open in mail app", (cx) => v.openEmail(app, cx), t)))
+      .when(app.hasEmail, (e) => e.child(button("jq-email-open", "Open email, attachments in", (cx) => v.openEmail(app, cx), t, app.stage === "ready"))))
+    .when(app.hasEmail, (e) => e.child(emailLine(app, t)))
+    .child(row()
       .child(button("jq-export", "Export PDFs", (cx) => v.exportFiles(app, cx), t))
       .when(!app.appliedAt, (e) => e.child(button("jq-applied", "Mark as applied", (cx) => v.setStage(app, "applied", cx), t))))
     .child(heading("Documents", t, "· means not written yet"))
@@ -198,6 +221,8 @@ function panel(v, t) {
     : v.tab === "application" ? detailBody(v, t)
     : v.tab === "profile" ? profileBody(v, t)
     : v.tab === "intake" ? intakeBody(v, t)
+    : v.tab === "party" ? partyBody(v, t)
+    : v.tab === "chat" ? chatPanel(v, t)
     : boardBody(v, t);
   return v_flex().flex_1().min_h(0).bg(t.surface)
     .child(h_flex().flex_none().px(10).py(8).gap(5).flex_wrap().items_center().border_b(1).border_color(t.border)
@@ -207,11 +232,14 @@ function panel(v, t) {
     .child(body);
 }
 
-const BODIES = { board: boardBody, detail: detailBody, profile: profileBody, intake: intakeBody };
+const BODIES = { board: boardBody, detail: detailBody, profile: profileBody, intake: intakeBody, party: partyBody };
 
 export function draw(v) {
   const t = theme();
   if (v.part === "bar") return bar(v, t);
+  if (v.part === "rail") return rail(v, t);
+  if (v.part === "tabs") return terminalTabs(v, t);
+  if (v.part === "chat") return frame(v, t, "job-quest-chat", v.snap ? chatPanel(v, t) : loading(t));
   if (v.part === "panel") return frame(v, t, "job-quest", panel(v, t));
   return frame(v, t, `job-quest-${v.part}`, v.snap ? BODIES[v.part](v, t) : loading(t));
 }
