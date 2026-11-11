@@ -599,3 +599,15 @@ test("a new job never takes an old job's agent, and quiet strays are swept up", 
   assert.ok(closed.includes("tab7"), "a quiet Job Quest stray");
   assert.ok(!closed.includes("tab8"), "never a terminal outside the data folder");
 });
+
+test("the beacon runs the party from your everyday layout and remembers it as home", async () => {
+  world.shared.layout = "herdr-jq";
+  const view = await copy("beacon");
+  assert.equal(world.shared["job-quest.home"], "herdr-jq");
+  assert.equal(party.lead(view.token), true, "it may lead");
+  find(view.render(cx), "jq-beacon-open").click({}, cx);
+  assert.deepEqual(world.ran.at(-1), { name: "layout.switch", args: { name: "job-quest" } });
+  const bar = await copy("bar");
+  find(bar.render(cx), "jq-leave").click({}, cx);
+  assert.deepEqual(world.ran.at(-1), { name: "layout.switch", args: { name: "herdr-jq" } });
+});

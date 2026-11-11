@@ -9,6 +9,7 @@
 //   rail     a narrow strip of the party's agents: click one to show it in the agent block
 //   tabs     the Terminals view's strip: a tab per terminal Job Quest started, one shown below
 //   chat     the party chat: what the workers post, your replies, the party's events
+//   beacon   a strip for your everyday layout: the party at a glance; it runs the party there
 //   (none)   all of it in one tabbed panel, for use outside the layout
 //
 // The party (party.js) is run by one copy, the rail in the layout or the panel outside it.
@@ -41,9 +42,12 @@ export const AGENT_KEY = "job-quest.agent";
 const REVISION_KEY = "job-quest.revision";
 // When a copy started an agent it is still waiting for (0: none), so the bar can say so.
 const STARTING_KEY = "job-quest.starting";
-export const PARTS = ["bar", "board", "detail", "profile", "intake", "party", "rail", "tabs", "chat", "panel"];
-// The parts that may run the party; a lease picks one.
-const LEADERS = ["rail", "panel"];
+export const PARTS = ["bar", "board", "detail", "profile", "intake", "party", "rail", "tabs", "chat", "beacon", "panel"];
+// The parts that may run the party; a lease picks one. The beacon goes in your everyday layout,
+// so the party runs (and tidies up) while Job Quest is not on screen.
+const LEADERS = ["rail", "panel", "beacon"];
+// The layout the beacon lives in: where "Back" in Job Quest's bar returns to.
+export const HOME_KEY = "job-quest.home";
 const PARTY_EVERY = 3000;
 // The layout's node ids this mod drives.
 export const VIEW_STACK = "jq-view";
@@ -91,6 +95,7 @@ export default class JobQuest extends View {
     this.warned = new Set(); // applications the party has said it is stuck on
     this.start(cx);
     if (LEADERS.includes(this.part)) cx.timer.every(PARTY_EVERY, (cx) => this.partyRound(cx));
+    if (this.part === "beacon" && typeof shared("layout") === "string") setShared(HOME_KEY, shared("layout"));
     cx.spawn(async (cx) => {
       try { this.known = (await knownAgents()).filter((agent) => agent.installed); } catch { this.known = []; }
       cx.notify();
@@ -470,6 +475,13 @@ export default class JobQuest extends View {
   // ---- the party
 
   toggleAutopilot() { party.setAutopilot(!party.autopilot()); }
+
+  // Job Quest's way back to where the beacon lives (else Herdr's main layout), and the way in.
+  goHome() {
+    const home = shared(HOME_KEY);
+    run("layout.switch", { name: typeof home === "string" && home !== "job-quest" ? home : "main" });
+  }
+  openQuest() { run("layout.switch", { name: "job-quest" }); }
 
   // Hands a lead to the party: drafting is the party's stage.
   sendParty(app, cx) { this.setStage(app, "drafting", cx); }

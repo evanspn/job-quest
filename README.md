@@ -68,6 +68,16 @@ Besides `refresh`, `open-<id>`, `tab-<pipeline|party|profile|intake|terminals>`,
 
 The first time an agent starts in the data folder it may ask a question first (Claude Code asks whether to trust the folder). Job Quest shows the Terminals view so you can answer, then opens the agent pane.
 
+### Keep the party running outside Job Quest
+
+The party runs in the copy of the mod that holds its lease: the rail in the Job Quest layout, the standalone panel, or the **beacon**, a one-line strip for your everyday layout ("⚔ 2 questing · 1 need you · 1 to approve", AUTO / PAUSED; click it to open Job Quest). With the beacon in the layout you use, the party keeps working, closing and tidying while Job Quest is not on screen, and Job Quest's Back button returns to that layout. Herdr's own layouts are read-only, so clone one first:
+
+```sh
+herdr-app do layout.clone '{"name":"main","as":"herdr-jq"}'
+```
+
+then, in `~/.config/herdr-app/layouts/herdr-jq.json`, put the beacon beside the status block: replace `{ "id": "status", ... }` with a row of it and `{ "id": "jq-beacon", "type": "block", "content": { "mod": "job-quest", "props": { "part": "beacon" } }, "size": { "px": 300 } }`.
+
 ### As a panel in your own layout
 
 The same mod with no `part` is a tabbed panel. Open it as a window with `herdr-app do mod.open --name job-quest`, or add a block to your layout: `{ "type": "block", "content": { "mod": "job-quest" }, "size": { "px": 440 } }`.

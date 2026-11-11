@@ -190,3 +190,24 @@ export function terminalTabs(v, t) {
     .children(list.map(tab))
     .when(list.length === 0, (e) => e.child(note("No Job Quest terminals are running. The party's and the buttons' agents show up here, one tab each.", t)));
 }
+
+// The beacon: one line for your everyday layout's status row. The party at a glance; click it
+// to open Job Quest. Its copy also runs the party, so nothing waits for Job Quest to be open.
+export function beacon(v, t) {
+  const live = party.jobs().filter(isLive);
+  const working = live.filter((j) => ["working", "starting"].includes(j.state)).length;
+  const waiting = live.filter((j) => j.state === "waiting").length;
+  const ready = v.snap ? v.snap.applications.filter((a) => a.stage === "ready").length : 0;
+  const bits = [working && `${working} questing`, waiting && `${waiting} need you`, ready && `${ready} to approve`].filter(Boolean);
+  const on = party.autopilot();
+  return h_flex().id("jq-beacon").size_full().px(10).gap(8).items_center().text_size(11.5).text_color(t.muted)
+    .child(h_flex().id("jq-beacon-open").flex_1().min_w(0).gap(6).items_center().cursor_pointer().rounded(5).px(4)
+      .hover((s) => s.bg(t.hover)).tooltip("Open Job Quest").on_click(() => v.openQuest())
+      .child(div().flex_none().text_color(t.foreground).child("⚔"))
+      .when(working > 0, (e) => e.child(div().flex_none().text_color(t.working).frames(SPINNER, 90)))
+      .child(div().min_w(0).truncate().text_color(waiting || ready ? t.blocked : t.muted)
+        .child(bits.length ? bits.join(" · ") : "Job Quest: the party is resting")))
+    .child(div().id("jq-beacon-auto").flex_none().px(5).rounded(4).cursor_pointer().text_size(10).font_semibold()
+      .text_color(on ? t.done : t.dim).hover((s) => s.bg(t.hover)).tooltip("Autopilot: click to switch")
+      .on_click(() => v.toggleAutopilot()).child(on ? "AUTO" : "PAUSED"));
+}

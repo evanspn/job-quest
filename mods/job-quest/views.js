@@ -5,7 +5,7 @@ import { v_flex, h_flex, Editor, TextView } from "gpui-base";
 import { theme, run } from "herdr";
 import { STAGES, STAGE_LABEL, INTAKE_FIELDS, DOCS, columns, followUpsDue, nameOf, fitOf } from "./model.js";
 import * as party from "./party.js";
-import { rarity, jobLine, partySummary, partyStatus, rail, partyBody, terminalTabs } from "./party-views.js";
+import { rarity, jobLine, partySummary, partyStatus, rail, partyBody, terminalTabs, beacon } from "./party-views.js";
 import { chatPanel } from "./chat-views.js";
 import { button, chip, heading, note, row, input, area, labelled, card, scroller } from "./ui.js";
 
@@ -47,7 +47,7 @@ function bar(v, t) {
     .child(chip("jq-chat-toggle", "Chat", false, () => run("layout.toggle", { id: "jq-chat" }), t))
     .child(chip("jq-agent-toggle", "Agent pane", false, () => run("layout.toggle", { id: "jq-agent" }), t))
     .child(chip("jq-refresh", "Refresh", false, (cx) => { cx.spawn((cx) => v.reload(cx)); }, t))
-    .child(chip("jq-leave", "Back to Herdr", false, () => run("layout.switch", { name: "main" }), t));
+    .child(chip("jq-leave", "Back to Herdr", false, () => v.goHome(), t));
 }
 
 // ---- board: applications by stage
@@ -239,6 +239,7 @@ export function draw(v) {
   if (v.part === "bar") return bar(v, t);
   if (v.part === "rail") return rail(v, t);
   if (v.part === "tabs") return terminalTabs(v, t);
+  if (v.part === "beacon") return beacon(v, t);
   if (v.part === "chat") return frame(v, t, "job-quest-chat", v.snap ? chatPanel(v, t) : loading(t));
   if (v.part === "panel") return frame(v, t, "job-quest", panel(v, t));
   return frame(v, t, `job-quest-${v.part}`, v.snap ? BODIES[v.part](v, t) : loading(t));
