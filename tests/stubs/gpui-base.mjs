@@ -4,7 +4,7 @@ export const v_flex = () => element("v_flex");
 export const h_flex = () => element("h_flex");
 
 class TextState {
-  constructor(options = {}) { this.text = options.value ?? ""; this.handlers = {}; }
+  constructor(options = {}) { this.text = options.value ?? ""; this.placeholder = options.placeholder ?? ""; this.handlers = {}; }
   value() { return this.text; }
   set_value(text) { this.text = text; }
   on(event, handler) { this.handlers[event] = handler; }

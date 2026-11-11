@@ -10,7 +10,7 @@ export const shared = (key) => world.shared[key];
 export const setShared = (key, value) => { world.shared[key] = value; return null; };
 export const run = (name, args) => { world.ran.push({ name, args }); return null; };
 export const notify = (notice) => { world.notices.push(notice); return "n1"; };
-export const theme = () => new Proxy({}, { get: (_t, name) => `#${String(name)}` });
+export const theme = () => world.theme ?? new Proxy({}, { get: (_t, name) => `#${String(name)}` });
 export const window = () => ({ platform: "linux" });
 export const props = () => world.props;
 export const layout = () => world.layout;

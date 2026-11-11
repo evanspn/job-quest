@@ -1,8 +1,9 @@
 // A stand-in for gpui-kit's builders: every styling call chains and is forgotten; ids, clicks,
 // text and children are kept, so a test can find an element, read it and click it.
+// Every call is also recorded in `calls`, which tools/preview.mjs turns into a picture.
 // It accepts any method name, so it cannot catch a misspelt one: only `herdr-app check` can.
 export class Node {
-  constructor(kind) { this.kind = kind; this.children_ = []; this.id_ = null; this.click = null; this.state = null; }
+  constructor(kind) { this.kind = kind; this.calls = []; this.children_ = []; this.id_ = null; this.click = null; this.state = null; }
 }
 
 const KEPT = {
@@ -20,7 +21,7 @@ export function element(kind, state = null) {
   const proxy = new Proxy(node, {
     get(target, name) {
       if (name in target || typeof name === "symbol") return target[name];
-      return (...args) => { KEPT[name]?.(target, ...args, proxy); return proxy; };
+      return (...args) => { target.calls.push([name, args]); KEPT[name]?.(target, ...args, proxy); return proxy; };
     },
   });
   return proxy;
