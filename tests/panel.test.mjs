@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { world } from "./stubs/herdr.mjs";
+import { world, sendCommand, forgetCopies } from "./stubs/herdr.mjs";
 import { find, texts, walk } from "./stubs/gpui-kit.mjs";
 import JobQuest, { PARTS, VIEW_STACK, AGENT_BLOCK } from "../mods/job-quest/main.js";
 
@@ -51,8 +51,9 @@ async function seed(id, files) {
 }
 
 beforeEach(async () => {
+  forgetCopies();
   const home = await mkdtemp(join(tmpdir(), "job-quest-"));
-  Object.assign(world, { home, shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [],
+  Object.assign(world, { home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [],
     agents: [{ key: "claude", name: "Claude Code", run: ["claude"], installed: true }, { key: "codex", name: "Codex", run: ["codex"], installed: false }] });
   dir = join(home, "job-quest-data");
   globalThis.localStorage = { getItem: () => null, setItem() {} };
@@ -278,4 +279,62 @@ test("every part renders, with and without a selected application, and ids are u
       }
     }
   }
+});
+
+test("the layout's copies all start at once on an empty folder, and none reports a conflict", async () => {
+  // Every block of layouts/job-quest.json is its own copy, started together on first open.
+  const views = ["bar", "board", "detail", "profile", "intake"].map((part) => {
+    world.props = { part };
+    const view = new JobQuest();
+    view.init({}, cx);
+    return view;
+  });
+  await until(() => views.every((v) => v.snap), "every copy's first read");
+  assert.deepEqual(views.map((v) => v.error ?? null), views.map(() => null));
+  assert.match(await readFile(join(dir, "AGENTS.md"), "utf8"), /./);
+});
+
+test("a draft command from keys starts one agent, from the copy that draws the application", async () => {
+  await seed("acme-backend-engineer", { "application.json": JSON.stringify({ company: "Acme", role: "Backend Engineer", stage: "lead" }) });
+  const views = [];
+  for (const part of ["bar", "board", "detail"]) views.push(await copy(part));
+  world.shared["job-quest.selected"] = "acme-backend-engineer";
+  for (const v of views) v.render(cx);
+  await until(() => views[2].application(), "the detail copy to follow the selection");
+  sendCommand("draft-both");
+  await until(() => world.ran.some((r) => r.name === "tab.new"), "an agent tab");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(world.ran.filter((r) => r.name === "tab.new").length, 1);
+  await until(async () => (await json("applications/acme-backend-engineer/application.json")).stage === "drafting", "the card to move to Drafting");
+});
+
+test("an agent stopped at a first-run question is shown in Terminals until it starts", async () => {
+  world.layout = LAYOUT;
+  const intake = await copy("intake");
+  click(intake, "jq-intake-interview");
+  // The program runs but is not an agent yet: it is asking whether to trust the folder.
+  world.terminals = [{ address: "t9" }];
+  for (let i = 0; i < 3; i += 1) intake.followAgent(cx);
+  assert.deepEqual(world.ran.at(-1), { name: "layout.select", args: { stack: "jq-view", child: "jq-terminals" } });
+  for (let i = 0; i < 60; i += 1) intake.followAgent(cx);
+  assert.ok(intake.awaiting, "still waiting while the person answers");
+  // Answered: it reports a status, so it is an agent now.
+  world.terminals = []; world.running = [{ address: "t9" }];
+  world.layout = { ...LAYOUT, children: LAYOUT.children.map((c) => c) };
+  intake.followAgent(cx);
+  assert.deepEqual(world.ran.filter((r) => r.name !== "layout.select" || r.args.child !== "jq-terminals").slice(1), [
+    { name: "agent.focus", args: { terminal: "t9" } },
+    { name: "layout.show", args: { id: "jq-agent" } },
+  ]);
+  assert.equal(intake.awaiting, null);
+});
+
+test("the bar says an agent is starting when another copy started it", async () => {
+  world.layout = LAYOUT;
+  const bar = await copy("bar"), intake = await copy("intake");
+  click(intake, "jq-intake-interview");
+  assert.ok(texts(bar.render(cx)).includes("Starting agent…"));
+  world.running = [{ address: "t9" }];
+  intake.followAgent(cx);
+  assert.ok(!texts(bar.render(cx)).includes("Starting agent…"));
 });

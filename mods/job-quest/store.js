@@ -24,13 +24,20 @@ const names = (path) => fs.readdir(path).catch(() => []);
 const read = (path) => readTextFile(path).catch(() => null);
 
 // writeTextFile replaces a file only when told what it holds now (null: a new file).
+// Every block of the layout is its own copy of the mod, and they start together: two copies can
+// read the same old text and race to write the same new one. A rejected write whose file now
+// holds what this copy wanted is a lost race, not a conflict.
 async function put(path, text) {
   const current = await read(path);
-  if (current !== text) await writeTextFile(path, text, current);
+  if (current === text) return;
+  try { await writeTextFile(path, text, current); }
+  catch (e) { if ((await read(path)) !== text) throw e; }
 }
 
 async function putIfMissing(path, text) {
-  if ((await read(path)) === null) await writeTextFile(path, text, null);
+  if ((await read(path)) !== null) return;
+  try { await writeTextFile(path, text, null); }
+  catch (e) { if ((await read(path)) === null) throw e; }
 }
 
 // The folder's fixed files. Guides are the person's to edit, so one that exists is left alone;

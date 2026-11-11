@@ -2,6 +2,8 @@
 
 A job-search workspace for the [Herdr](https://herdr.dev) desktop app. It is a **layout**, a whole window with a pipeline board, an application view and your coding agent side by side, filled by one **mod** that also works alone as a panel in your own layout. It tracks applications, has an agent draft tailored resumes and cover letters, and prepares application emails. Everything it knows is plain files in a folder on your computer.
 
+![Job Quest](preview.png)
+
 ## Install
 
 Ask an agent inside Herdr:
@@ -32,6 +34,12 @@ Then switch layouts with Ctrl+Shift+L, or `herdr-app do layout.switch --name job
 | Agent pane | Opens on the right when a button starts an agent, showing it live so you can steer it. |
 
 Buttons that need judgement (draft, write email, export PDFs, interview, build profile, summarize projects) start your coding agent in a new tab, in the data folder, with the task as its first message. The window re-reads the folder whenever a file changes.
+
+### Keys and scripts
+
+Besides `refresh`, `open-<id>`, `tab-<pipeline|profile|intake|terminals>` and `doc-<posting|resume|letter|email>`, the selected application takes `draft-both`, `draft-resume`, `draft-letter` and `write-email`. Bind them in `keys.json` (for example `"layout:job-quest": { "ctrl-shift-d": "job-quest.draft-both" }`) or run `herdr-app do job-quest.draft-both`.
+
+The first time an agent starts in the data folder it may ask a question first (Claude Code asks whether to trust the folder). Job Quest shows the Terminals view so you can answer, then opens the agent pane.
 
 ### As a panel in your own layout
 

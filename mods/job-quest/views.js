@@ -37,7 +37,7 @@ function bar(v, t) {
     .child(div().pr(8).font_semibold().child("Job Quest"))
     .children(LAYOUT_VIEWS.map(([id, label]) => chip(`jq-view-${id}`, label, view === `jq-${id}`, (cx) => v.show(id, cx), t)))
     .child(div().flex_1())
-    .when(Boolean(v.awaiting), (e) => e.child(note("Starting agent…", t, t.working)))
+    .when(v.starting(), (e) => e.child(note("Starting agent…", t, t.working)))
     .when(Boolean(agent), (e) => e.child(note(`Agent: ${agent.name}`, t)))
     .child(chip("jq-agent-toggle", "Agent pane", false, () => run("layout.toggle", { id: "jq-agent" }), t))
     .child(chip("jq-refresh", "Refresh", false, (cx) => { cx.spawn((cx) => v.reload(cx)); }, t))

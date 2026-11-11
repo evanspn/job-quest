@@ -13,7 +13,7 @@
 import { View } from "gpui-kit";
 import { InputState, TextareaState, EditorState } from "gpui-base";
 import {
-  run, exec, notify, knownAgents, agents, pickFolder, shared, setShared, watchFolder, window,
+  run, exec, notify, knownAgents, agents, terminals, pickFolder, shared, setShared, watchFolder, window,
   layout, settings, props, nextCommand,
 } from "herdr";
 import {
@@ -30,6 +30,8 @@ import { draw } from "./views.js";
 export const SELECTED_KEY = "job-quest.selected";
 export const AGENT_KEY = "job-quest.agent";
 const REVISION_KEY = "job-quest.revision";
+// When a copy started an agent it is still waiting for (0: none), so the bar can say so.
+const STARTING_KEY = "job-quest.starting";
 export const PARTS = ["bar", "board", "detail", "profile", "intake", "panel"];
 // The layout's node ids this mod drives.
 export const VIEW_STACK = "jq-view";
@@ -102,6 +104,14 @@ export default class JobQuest extends View {
         else if (command.startsWith("open-")) this.select(command.slice(5), cx);
         else if (command.startsWith("tab-")) this.show(command.slice(4), cx);
         else if (command.startsWith("doc-")) this.showDoc(command.slice(4), cx);
+        // The application view's agent buttons, for keys.json or a script. Every shown copy gets
+        // the command; only the one that draws the application acts, so one agent starts.
+        else if (["draft-both", "draft-resume", "draft-letter", "write-email"].includes(command) && ["detail", "panel"].includes(this.part)) {
+          const app = this.application();
+          if (!app) { this.error = "Pick an application first."; }
+          else if (command === "write-email") this.writeEmail(app, cx);
+          else this.draft(app, { "draft-both": "both", "draft-resume": "resume", "draft-letter": "cover-letter" }[command], cx);
+        }
         cx.notify();
       }
     });
@@ -349,20 +359,44 @@ export default class JobQuest extends View {
   ask(name, task) {
     const agent = this.agent();
     if (!agent) { notify({ title: "No coding agent found", body: "Install one (Claude Code, Codex, ...) so Job Quest can hand it work.", level: "error" }); return; }
-    this.awaiting = { before: agents().map((a) => a.address), tries: 0 };
+    this.awaiting = { before: terminals().map((t) => t.address), tries: 0, revealed: false };
+    setShared(STARTING_KEY, Date.now());
     run("tab.new", { name, folder: this.dir, argv: agent.run, task });
   }
 
-  // run() returns nothing, so the new agent is found by comparing agents() with before.
+  // run() returns nothing, so the new terminal is found by comparing terminals() with before.
+  // A program counts as an agent (agents()) only once it reports a status; before that it may be
+  // showing a first-run question (Claude Code asks whether to trust the folder). In the layout
+  // the Terminals view then shows it so the person can answer; once it is an agent, the agent
+  // pane opens on it and the view goes back to where it was.
   followAgent(cx) {
     const waiting = this.awaiting;
     if (!waiting) return;
-    const started = agents().find((a) => !waiting.before.includes(a.address));
-    if (started && findNode(layout(), AGENT_BLOCK)) {
-      run("agent.focus", { terminal: started.address });
-      run("layout.show", { id: AGENT_BLOCK });
+    const started = terminals().find((t) => !waiting.before.includes(t.address) && t.state === "live");
+    const agent = started && agents().find((a) => a.address === started.address);
+    const inLayout = Boolean(findNode(layout(), AGENT_BLOCK));
+    if (agent) {
+      if (inLayout) {
+        run("agent.focus", { terminal: agent.address });
+        run("layout.show", { id: AGENT_BLOCK });
+        if (waiting.revealed && this.view() === "jq-terminals") run("layout.select", { stack: VIEW_STACK, child: waiting.revealed });
+      }
+      this.stopWaiting(cx); return;
     }
-    if (started || (waiting.tries += 1) > 30) { this.awaiting = null; cx.notify(); }
+    waiting.tries += 1;
+    if (started && inLayout && !waiting.revealed && waiting.tries >= 3) {
+      waiting.revealed = this.view() ?? "jq-pipeline";
+      run("layout.select", { stack: VIEW_STACK, child: "jq-terminals" });
+    }
+    // Give a person time to answer a first-run question; give up on a program that never starts.
+    if (waiting.tries > (started ? 300 : 30)) this.stopWaiting(cx);
+  }
+
+  stopWaiting(cx) { this.awaiting = null; setShared(STARTING_KEY, 0); cx.notify(); }
+  // A time, not a flag, so a wait cut short by quitting does not say "Starting agent…" forever.
+  starting() {
+    const since = shared(STARTING_KEY);
+    return Boolean(this.awaiting) || (typeof since === "number" && since > 0 && Date.now() - since < 310000);
   }
 
   interview() { this.ask("Job Quest: intake", prompts.interview(this.dir)); }
