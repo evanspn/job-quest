@@ -578,3 +578,24 @@ test("hands off where you are: a message waits while you type in that terminal, 
   assert.equal(party.outbox().length, 0);
   void stub;
 });
+
+test("a new job never takes an old job's agent, and quiet strays are swept up", async () => {
+  const old = { ...party.newJob({ key: "a", member: "scribe", kind: "draft", appId: "northwind" }), state: "done", address: "t1", closed: false };
+  party.saveJobs([old]);
+  world.running = [{ address: "t1", tab: "tab1", tab_name: old.tab, status: "done" }];
+  const next = party.newJob({ key: "b", member: "scribe", kind: "revise", appId: "northwind" });
+  assert.notEqual(next.tab, old.tab, "a different name while the old tab is open");
+  party.saveJobs([next]);
+  assert.equal(party.agentFor(next), null, "not the old job's agent");
+
+  const view = await copy("rail");
+  world.terminals = [{ address: "t7", cwd: dir, state: "live" }, { address: "t8", cwd: "/elsewhere", state: "live" }];
+  world.running.push({ address: "t7", tab: "tab7", tab_name: "Draft: Initech", status: "done" }, { address: "t8", tab: "tab8", tab_name: "mine", status: "done" });
+  world.spaces = [{ id: "s1", name: "~", active: true, machine: null, tabs: [
+    { id: "tab7", panes: 1, changed_at: Date.now() - 60 * 60 * 1000 }, { id: "tab8", panes: 1, changed_at: 0 }] }];
+  party.setAutopilot(false);
+  await round(view);
+  const closed = world.ran.filter((r) => r.name === "tab.close").map((r) => r.args.id);
+  assert.ok(closed.includes("tab7"), "a quiet Job Quest stray");
+  assert.ok(!closed.includes("tab8"), "never a terminal outside the data folder");
+});

@@ -31,6 +31,7 @@ export const inTerminals = () => findNode(layout(), "jq-view")?.active === TERMI
 const LEASE = 15000;           // a leader that has not renewed for this long is replaced
 const CLOSE_AFTER = 90 * 1000; // a finished job's tab closes this long after, unless on screen
 const STALE = 20 * 60 * 1000;  // a job waiting this long, or stopped unfinished, is closed
+const STRAY = 10 * 60 * 1000;  // an untracked Job Quest agent quiet this long is closed
 const KEPT = 40;               // finished jobs remembered
 
 // A job: { key, member, kind, appId, title, tab, round, report, auto, state, startedAt,
@@ -52,8 +53,13 @@ export function saveJobs(changed) {
   setShared(PARTY_KEY, { jobs: [...ended, ...live].sort((a, b) => a.startedAt - b.startedAt) });
 }
 
-export const agentFor = (job, list = agents()) =>
-  list.find((a) => (job.address ? a.address === job.address : a.tab_name === job.tab)) ?? null;
+// A job's agent: by its address once known; before that, by its tab name, never one another
+// job has already claimed.
+export function agentFor(job, list = agents()) {
+  if (job.address) return list.find((a) => a.address === job.address) ?? null;
+  const claimed = new Set(jobs().map((j) => j.address).filter(Boolean));
+  return list.find((a) => a.tab_name === job.tab && !claimed.has(a.address)) ?? null;
+}
 
 // The address the agent block shows: the one this mod last chose, if it is still running.
 export function shownAddress() {
@@ -89,7 +95,8 @@ function tabName(member, slug, taken) {
 
 // A new job, not yet started.
 export function newJob(fields, now = Date.now()) {
-  const taken = jobs().filter(isLive).map((job) => job.tab);
+  // Unique among every tab still open, so a new job never answers to an old job's agent.
+  const taken = [...jobs().filter((job) => !job.closed).map((job) => job.tab), ...agents().map((a) => a.tab_name)];
   return {
     round: 0, report: "", appId: null, title: "", auto: false, address: null, endedAt: 0, closed: false,
     ...fields, tab: tabName(fields.member, slugOf(fields), taken), state: "starting", startedAt: now,
@@ -389,6 +396,20 @@ export async function round(v, now = Date.now()) {
     changed.push(next);
   }
   if (changed.length) saveJobs(changed);
+
+  // Strays: Job Quest agents no job tracks (started before tracking, or lost track of), in any
+  // space. Closed once quiet for a while, when the tab holds nothing else and is not in your way.
+  const tracked = new Set(jobs().filter((j) => !j.closed).map((j) => j.address).filter(Boolean));
+  const tabInfo = new Map(spaces().flatMap((s) => (s.tabs ?? []).map((tab) => [tab.id, tab])));
+  for (const t of terminals()) {
+    if (t.state !== "live" || t.cwd !== v.dir || tracked.has(t.address)) continue;
+    const agent = running.find((a) => a.address === t.address);
+    const tab = agent && tabInfo.get(agent.tab);
+    if (!agent || !["idle", "done"].includes(agent.status) || !tab || tab.panes > 1 || inYourWay(agent)) continue;
+    if (now - (tab.changed_at ?? 0) < STRAY) continue;
+    run("tab.close", { id: agent.tab, confirmed: true });
+    log.push(say("guildmaster", null, `🧹 Closed a finished tab: ${agent.tab_name || t.address}`, now));
+  }
 
   // The space: its current name, and its tabs in order of what needs the person.
   const space = partySpace();
