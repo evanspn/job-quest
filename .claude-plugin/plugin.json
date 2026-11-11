@@ -1,0 +1,14 @@
+{
+  "name": "job-quest",
+  "version": "0.1.0",
+  "description": "A tabbed job-search workspace beside the chat: intake, profile, pipeline, tailored resume and cover letter drafts, and email submissions, all kept in a local folder.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "dataDir": {
+      "type": "string",
+      "title": "Data folder",
+      "description": "Local folder where your intake, profile documents and applications are kept. ~ is your home folder.",
+      "default": "~/job-quest-data"
+    }
+  }
+}
