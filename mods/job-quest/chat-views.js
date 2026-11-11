@@ -2,7 +2,7 @@
 // box to answer a worker or everyone. Reads the view `v`; touches no files.
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { MEMBERS, handlesFor } from "./model.js";
+import { MEMBERS } from "./model.js";
 import * as party from "./party.js";
 import { note, input } from "./ui.js";
 
@@ -34,6 +34,7 @@ function theirs(v, t, item, i) {
       .child(h_flex().gap(6).items_center().text_size(10.5)
         .child(div().font_semibold().text_color(t.foreground).child(m.name))
         .when(Boolean(item.appId), (e) => e.child(div().min_w(0).truncate().text_color(t.muted).child(item.appId)))
+        .when(/@/.test(item.to), (e) => e.child(div().flex_none().text_color(t.muted).child(`→ ${item.to}`)))
         .child(div().text_color(t.dim).child(clock(item.at)))
         .child(div().flex_1())
         .child(h_flex().id(`jq-chat-${i}-reply`).px(5).rounded(4).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover))
@@ -52,9 +53,10 @@ function mentionList(v, t, choices) {
       const m = c.job ? party.describe(c.job) : null;
       return h_flex().id(`jq-mention-${i}`).px(8).py(4).gap(8).items_center().rounded(6).cursor_pointer().text_size(12)
         .hover((s) => s.bg(t.hover)).on_click((_e, cx) => v.pickMention(c.handle, cx))
-        .child(div().w(18).flex_none().child(m ? m.member.glyph : "📣"))
+        .child(div().w(18).flex_none().child(c.handle === "guildmaster" ? "⚔" : m ? m.member.glyph : "📣"))
         .child(div().flex_none().font_medium().child(`@${c.handle}`))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(m ? m.doing : "every worker running"));
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
+          .child(c.handle === "guildmaster" ? "your point of contact: passes it to whoever should do it" : m ? m.doing : "every worker running"));
     }))
     .when(choices.length === 0, (e) => e.child(div().px(8).py(4).text_size(11.5).text_color(t.dim).child("No running worker by that name")));
 }
@@ -62,11 +64,13 @@ function mentionList(v, t, choices) {
 // Who the message being typed goes to, said plainly.
 function toLine(v, t) {
   const target = v.chatTarget();
-  if (target.unknown.length) return note(`Nobody is called @${target.unknown.join(", @")}`, t, t.blocked);
-  const names = handlesFor(target.jobs).map((h) => `@${h.handle}`);
-  if (target.revive && !names.length) return note(`To a new ${target.revive.from}: it starts to act on your message`, t, t.muted);
-  if (target.everyone) return note(target.jobs.length ? `To everyone running (${target.jobs.length}) · type @ to pick` : "Nobody is running; it is kept for later · type @ to pick", t);
-  return note(`To ${names.join(", ")}`, t, t.muted);
+  if (target.unknown.length) return note(`Nobody is called @${target.unknown.join(", @")} · type @ to see who you can reach`, t, t.blocked);
+  if (target.lead && !target.jobs.length && !target.revive.length) {
+    const on = party.listeners().some((j) => j.kind === "lead");
+    return note(`To ⚔ the Guildmaster${on ? "" : ", who starts when you send"}: it works out who should handle it · type @ to name someone`, t);
+  }
+  if (target.everyone && !target.jobs.length) return note("To everyone running: nobody is running", t, t.blocked);
+  return note(`To ${party.recipients(target)}${target.revive.length ? " (starts to act on it)" : ""}`, t, t.muted);
 }
 
 export function chatPanel(v, t) {

@@ -37,11 +37,11 @@ This folder holds one person's job search. The Job Quest panel in the Herdr app 
 - \`applications/<id>/\`: one folder per application, holding \`application.json\` (\`id\`, \`company\`, \`role\`, \`url\`, \`stage\`, \`contactName\`, \`contactEmail\`, \`appliedAt\`, \`followUpAt\`, \`notes\`, \`fit\`, \`source\`, \`createdAt\`, \`updatedAt\`, all strings; dates as YYYY-MM-DD; \`fit\` a score from 0 to 100; \`stage\` one of lead, drafting, ready, applied, interview, offer, rejected, closed), plus, when they exist, \`posting.md\`, \`research.md\`, \`resume.md\`, \`cover-letter.md\`, \`review.md\`, \`email.md\`, \`followup.md\` and \`prep.md\`.
 - \`targets.json\`: companies the Scout watches, an array of \`{ company, careers, ats, slug }\`.
 - \`reports/\`: the Scout's report of each search. \`log.jsonl\`: the party's log, written by the panel.
-- \`chat/\`: the party chat, one JSON file a message: \`{ at, from, to, appId, text }\`. The person reads it in the panel; to reach them, write a new file there named \`<YYYYMMDD-HHMMSS>-<your role>.json\`. Their replies are typed into your terminal, starting with \`[Chat]\`.
+- \`chat/\`: the party chat, one JSON file a message: \`{ at, from, to, appId, text }\`. The person reads it in the panel; to reach them, write a new file there named \`<YYYYMMDD-HHMMSS>-<your role>.json\` with \`"to": "you"\`. A \`"to"\` of \`"@<role>/<application>"\` reaches that worker instead. Messages for you are typed into your terminal, starting with \`[Chat]\` (the person) or \`[Chat from the Guildmaster]\` (their point of contact).
 
 ## The party
 
-The panel runs a party of agents, each started with one job, handing work over through these files. An application in \`drafting\` is the party's: the Sage writes \`research.md\`, the Scribe the resume and cover letter, the Inquisitor \`review.md\` (first lines \`Verdict: pass\` or \`Verdict: revise\`, then \`Round: n\`), the Herald \`email.md\` and the PDFs. Then the panel moves it to \`ready\` and the person approves and sends it. Nothing is drafted for an application without a \`contactEmail\`: the party stops there until the person adds one. \`email.md\` starts with \`To:\`, \`From:\`, \`Subject:\` and \`Attachments:\` lines (file names in the application's folder), then a blank line and the body. The panel decides who goes next from which files exist, so write the file your task names, and write it last when the task says so.
+The panel runs a party of agents, each started with one job, handing work over through these files. An application in \`drafting\` is the party's: the Sage writes \`research.md\`, the Scribe the resume and cover letter, the Inquisitor \`review.md\` (first lines \`Verdict: pass\` or \`Verdict: revise\`, then \`Round: n\`), the Herald \`email.md\` and the PDFs. Then the panel moves it to \`ready\` and the person approves and sends it. Nothing is drafted for an application without a \`contactEmail\`: after research finds none, the Sage searches once more (\`contact-search.md\`), and if there is still none the panel closes the application. \`email.md\` starts with \`To:\`, \`From:\`, \`Subject:\` and \`Attachments:\` lines (file names in the application's folder), then a blank line and the body. The panel decides who goes next from which files exist, so write the file your task names, and write it last when the task says so.
 
 Rules:
 
@@ -139,7 +139,7 @@ Change no wording. Check the result by opening it: the resume must fit the page 
 // How an agent talks to the person: a message file in chat/, which the panel shows in the party
 // chat. The person's replies are typed into the agent's terminal.
 export const chatHowTo = (dir, member, appId = "") =>
-  `**The party chat.** I read the party chat, not your terminal. To ask me something, tell me about a blocker, or report what you finished, write a new file \`${dir}/chat/<YYYYMMDD-HHMMSS>-${member}.json\` (the time from \`date +%Y%m%d-%H%M%S\`) holding one JSON object: \`{ "at": "<ISO 8601 time>", "from": "${member}", "appId": "${appId}", "text": "<your message, a few lines at most>" }\`. Never edit another file there. Post a question, then carry on with whatever does not depend on the answer. My replies arrive in your terminal as a message starting with \`[Chat]\`. When your job is done, post one short message saying what you did and anything I should know.`;
+  `**The party chat.** I read the party chat, not your terminal. To ask me something, tell me about a blocker, or report what you finished, write a new file \`${dir}/chat/<YYYYMMDD-HHMMSS>-${member}.json\` (the time from \`date +%Y%m%d-%H%M%S\`) holding one JSON object: \`{ "at": "<ISO 8601 time>", "from": "${member}", "to": "you", "appId": "${appId}", "text": "<your message, a few lines at most>" }\`. Never edit another file there. Post a question, then carry on with whatever does not depend on the answer. Messages for you arrive in your terminal starting with \`[Chat]\` (from me) or \`[Chat from the Guildmaster]\` (my point of contact, passing on what I want). When your job is done, post one short message saying what you did and anything I should know.`;
 
 const intro = (dir, name, what, appId = "") =>
   `You are the ${name} in my job-search party, a team of agents that each do one job and hand over through files in \`${dir}\`. ${what} Work on your own: do not stop to ask me unless you cannot do the job at all. I approve and send everything myself, so never send, submit or sign up for anything.
@@ -249,15 +249,49 @@ Read \`${folder}/posting.md\`, \`${folder}/research.md\`, \`${folder}/resume.md\
 Write \`${folder}/prep.md\`: a one-paragraph company recap; the likely interview steps; ten likely questions, each with an answer outline built from a real story in master.md in situation, task, action, result form (mark a question with no story as a gap to prepare); the technical topics to brush up given the posting and stack; five sharp questions for me to ask them; and what to say about salary given my intake. ${NO_INVENTING} Write prep.md last.`;
 }
 
-// A worker started to act on the person's reply to an earlier worker that has finished.
-export function followUp(dir, member, row, theirs, mine) {
+// A worker started to act on a chat message to a worker that is not running. `earlier`: what an
+// earlier worker in the role posted, if anything. `from`: "me" or "the Guildmaster".
+export function followUp(dir, member, row, earlier, message, from = "me") {
   const name = member.charAt(0).toUpperCase() + member.slice(1);
   const folder = row ? appDir(dir, row.id) : dir;
-  return `${intro(dir, name, `Your job: act on my reply in the party chat. An earlier ${name}${row ? `, working on ${title(row)},` : ""} posted: "${theirs}" I replied: "${mine}"`, row?.id ?? "")}
+  const said = from === "me" ? "I" : from;
+  const what = earlier
+    ? `An earlier ${name}${row ? `, working on ${title(row)},` : ""} posted: "${earlier}" ${said} replied: "${message}"`
+    : `${said} sent this to the ${name}${row ? ` about ${title(row)}` : ""}: "${message}"`;
+  return `${intro(dir, name, `Your job: act on a message in the party chat. ${what}`, row?.id ?? "")}
 
-Read what you need in \`${folder}\`${row ? ` (\`application.json\`, \`posting.md\`, \`research.md\` and the other documents there)` : ""} and \`${dir}/AGENTS.md\`. Then do what my reply asks, within your role: for example set \`contactEmail\` in \`${row ? `${folder}/application.json` : "the application's application.json"}\`, correct a document, or record a decision in the application's notes. Change only what my reply covers; the party picks up the next step from the files by itself. ${NO_INVENTING}
+Read what you need in \`${folder}\`${row ? ` (\`application.json\`, \`posting.md\`, \`research.md\` and the other documents there)` : ""} and \`${dir}/AGENTS.md\`. Then do what the message asks, within your role: for example set \`contactEmail\` in \`${row ? `${folder}/application.json` : "the application's application.json"}\`, correct a document, look for more openings, or record a decision in the application's notes. Change only what the message covers; the party picks up the next step from the files by itself. ${NO_INVENTING}
 
 Last, post one chat message saying what you changed.`;
+}
+
+// One deeper search for the address to send an application to, after research found none.
+export function contactSearch(dir, row) {
+  const folder = appDir(dir, row.id);
+  return `${intro(dir, "Sage", `Your job: find the email address to send my application for ${title(row)} to. Research found none, and without one the party closes this application.`, row.id)}
+
+Read \`${folder}/posting.md\`, \`${folder}/research.md\` (its How to apply section says where it already looked) and \`${folder}/application.json\`. Then look where research did not: the posting's apply page and any form's help text; the company's careers, jobs, team, about, contact and press pages; its GitHub organization and members' profiles; its founders' and the hiring manager's own sites, posts and talks; the Hacker News, Work at a Startup or job-board post the lead came from; recent interviews or podcasts with the team. A general address meant for applications (jobs@, careers@, hiring@) published by the company counts. Use only an address published on a page you read; never build one from a pattern like first@company.com.
+
+If you find one, set \`contactEmail\` (and \`contactName\` if known) in \`${folder}/application.json\`, changing nothing else there. Either way, write \`${folder}/contact-search.md\`: the address and the page it is published on, or "No published address found" and every place you looked. Write it last: it tells the party you are done. ${NO_INVENTING}`;
+}
+
+// The Guildmaster: the person's point of contact. Started with their first unaddressed message;
+// later ones are typed into its terminal. `roster`: who is running now, one line.
+export function guildmaster(dir, message, roster) {
+  return `You are the Guildmaster of my job-search party, a team of agents that each do one job and hand over through files in \`${dir}\` (read \`${dir}/AGENTS.md\` first). You are my point of contact: when I write in the party chat without naming a worker, it comes to you. You do not do the workers' jobs (finding openings, research, drafting, reviewing, emails); you work out what I want and get it done through them and through the files.
+
+What you can do:
+- **Answer me**: post a chat message to me (below).
+- **Pass something to a worker**: post a chat message with \`"to"\` set to its handle, like \`"@sage/northwind"\` (role, then the first word of the application id) or \`"@scribe"\` (every running Scribe). The panel types it into that worker's terminal. If no such worker is running, the panel starts a new one in that role on that application with your message as its job, so you can also have a role redo or fix something: \`@sage/acme\` find the contact email, \`@scribe/acme\` shorten the cover letter, \`@scout\` look for more forward deployed roles.
+- **Steer the party through the files**: move an application's \`stage\` in its \`application.json\` (\`drafting\` has the party take it on; \`closed\` drops it), set its \`contactEmail\`, \`url\` or \`notes\`, change \`intake.json\` (roles, deal-breakers, \`autoFit\`), add a company to \`targets.json\`. The panel notices and the party acts.
+- To see what is going on, read \`${dir}/log.jsonl\` (what the party did), \`${dir}/chat/\` (what was said) and the applications.
+
+Never send, submit or delete anything, and never write a resume, cover letter or email yourself. ${NO_INVENTING}
+
+**The chat.** To post, write a new file \`${dir}/chat/<YYYYMMDD-HHMMSS>-guildmaster.json\` (the time from \`date +%Y%m%d-%H%M%S\`) holding one JSON object: \`{ "at": "<ISO 8601 time>", "from": "guildmaster", "to": "you" or "@<handle>", "appId": "<application id or empty>", "text": "<a few lines at most>" }\`. Never edit another file there. My messages arrive in your terminal starting with \`[Chat]\`, followed by who is running now. Keep replies short: do what I asked, then tell me what you did and who you passed it to. If my message could mean two different things, ask me one question first. Between messages, wait.
+
+My message: "${message}"
+Running now: ${roster || "nobody"}`;
 }
 
 // The first message for a party job: { member, kind, appId, report }.
@@ -265,6 +299,7 @@ export function forJob(dir, job, row, today) {
   switch (job.kind) {
     case "scout": return scout(dir, job.report, today);
     case "research": return research(dir, row);
+    case "contact": return contactSearch(dir, row);
     case "draft": return scribe(dir, row);
     case "revise": return revise(dir, row);
     case "review": return review(dir, row);

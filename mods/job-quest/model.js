@@ -209,6 +209,7 @@ export const nameOf = (application) =>
 
 // Who is in the party. `color` names a theme color.
 export const MEMBERS = {
+  guildmaster: { name: "Guildmaster", glyph: "⚔", color: "foreground", role: "Your point of contact: takes what you say and passes it on" },
   scout: { name: "Scout", glyph: "🏹", color: "ansi2", role: "Finds openings that fit you" },
   sage: { name: "Sage", glyph: "🔮", color: "ansi5", role: "Researches the company" },
   scribe: { name: "Scribe", glyph: "🪶", color: "ansi4", role: "Drafts resume and cover letter" },
@@ -224,7 +225,7 @@ export const DOING = {
   scout: "Scouting for openings", research: "Researching", draft: "Drafting", revise: "Revising",
   review: "Reviewing", package: "Packaging", followup: "Writing a follow-up", prep: "Preparing interview notes",
   "draft-resume": "Drafting the resume", "draft-letter": "Drafting the cover letter", email: "Writing the email",
-  export: "Exporting PDFs", reply: "Acting on your reply", interview: "Interviewing you", master: "Building your master profile", repos: "Summarizing projects",
+  export: "Exporting PDFs", reply: "Acting on a message", lead: "Listening", contact: "Searching for a contact email", interview: "Interviewing you", master: "Building your master profile", repos: "Summarizing projects",
 };
 
 export const MAX_PARTY = 3;        // agents the party runs at once
@@ -233,7 +234,8 @@ export const START_TIMEOUT = 5 * 60 * 1000;
 // States of a job that still has an agent on it. waiting: it needs the person (a permission
 // prompt, or a question it posted in the chat). stopped: it went quiet without its file and
 // without asking anything.
-export const LIVE = ["starting", "working", "waiting", "stopped"];
+// listening: the Guildmaster, on duty between messages.
+export const LIVE = ["starting", "working", "waiting", "stopped", "listening"];
 // Jobs that are a conversation in the terminal: quiet means it is waiting for the person.
 const CONVERSATIONS = ["interview"];
 export const isLive = (job) => LIVE.includes(job.state);
@@ -268,9 +270,15 @@ export function nextStep(app, today, threshold) {
   if (app.stage === "drafting") {
     // The Sage finds the posting itself when there is no link; only if it could not is it stuck.
     if (!app.hasResearch) return { member: "sage", kind: "research" };
-    if (!app.hasPosting) return { stuck: "has no posting: the Sage could not find it. Paste the posting or its link" };
-    // Full stop: nothing is drafted for an application with nobody to send it to.
-    if (!isEmail(app.contactEmail)) return { stuck: "has no contact email, so nothing is drafted. Add the address to send it to and the party carries on" };
+    // Settled, not left hanging: what cannot be found closes the application, with the reason.
+    if (!app.hasPosting) return { advance: "closed", reason: "the Sage could not find the posting" };
+    // Full stop: nothing is drafted for an application with nobody to send it to. One deeper
+    // search for an address (contact-search.md records it), then closed if there is none.
+    if (!isEmail(app.contactEmail)) {
+      return app.hasContactSearch
+        ? { advance: "closed", reason: "no published contact email (see contact-search.md)" }
+        : { member: "sage", kind: "contact" };
+    }
     if (!app.hasResume || !app.hasCoverLetter) return { member: "scribe", kind: "draft" };
     if (!["pass", "revise"].includes(app.verdict)) return { member: "inquisitor", kind: "review" };
     if (app.verdict === "revise" && app.round < REVIEW_ROUNDS) return { member: "scribe", kind: "revise" };
@@ -287,11 +295,13 @@ export function nextStep(app, today, threshold) {
 export function jobDone(job, app, reports = []) {
   if (job.kind === "scout") return reports.includes(job.report);
   if (job.kind === "reply") return true;
+  if (job.kind === "lead") return null;
   // Profile and intake jobs have no application and no file to check.
   if (["interview", "master", "repos"].includes(job.kind)) return null;
   if (!app) return false;
   switch (job.kind) {
     case "research": return app.hasResearch;
+    case "contact": return app.hasContactSearch;
     case "draft": return app.hasResume && app.hasCoverLetter;
     case "draft-resume": return app.hasResume;
     case "draft-letter": return app.hasCoverLetter;
@@ -316,7 +326,8 @@ export const jobKey = (member, kind, appId, round = 0) => [member, kind, appId ?
 // What the party starts and moves now. `jobs`: every job it remembers; a job tried once is not
 // tried again by itself, so a step that fails waits for the person instead of looping.
 export function plan(snapshot, jobs, { threshold, scoutDue, room = MAX_PARTY }) {
-  const live = jobs.filter(isLive), tried = new Set(jobs.map((j) => j.key));
+  // The Guildmaster listens; it does not take a working slot.
+  const live = jobs.filter((j) => isLive(j) && j.kind !== "lead"), tried = new Set(jobs.map((j) => j.key));
   const busy = new Set(live.map((j) => j.appId).filter(Boolean));
   let free = room - live.length;
   const starts = [], advances = [], stuck = [];
@@ -332,7 +343,7 @@ export function plan(snapshot, jobs, { threshold, scoutDue, room = MAX_PARTY }) 
     if (busy.has(app.id)) continue;
     const step = nextStep(app, snapshot.today, threshold);
     if (!step) continue;
-    if (step.advance) { advances.push({ app, stage: step.advance }); continue; }
+    if (step.advance) { advances.push({ app, stage: step.advance, reason: step.reason ?? "" }); continue; }
     if (step.stuck) { stuck.push({ app, reason: step.stuck }); continue; }
     const key = jobKey(step.member, step.kind, app.id, app.round ?? 0);
     if (tried.has(key) || free <= 0) continue;
@@ -350,6 +361,7 @@ export function jobState(job, agent, done, now, asked = false) {
     if (agent.status === "working") return "working";
     if (agent.status === "blocked") return "waiting";
     if (done === true) return "done";
+    if (job.kind === "lead") return "listening";
     if (done === null) return CONVERSATIONS.includes(job.kind) ? "waiting" : "done";
     return asked ? "waiting" : "stopped";
   }

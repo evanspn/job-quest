@@ -9,6 +9,7 @@
 import { run, hc, notify, playSound, agents, terminals, spaces, shared, setShared, layout } from "herdr";
 import {
   MEMBERS, DOING, plan, jobState, jobDone, jobKey, minFit, isLive, withStage, nameOf, fitOf, findNode,
+  mentionsIn, handlesFor,
 } from "./model.js";
 import { saveApplication, appendLog } from "./store.js";
 import * as prompts from "./prompts.js";
@@ -162,9 +163,79 @@ export function senderOf(message, list = listeners()) {
   return list.find((job) => job.member === message.from && (!message.appId || job.appId === message.appId)) ?? null;
 }
 
+// Who is running, for the Guildmaster: "@sage/northwind (researching), @scout (scouting for openings)".
+export function roster(list = listeners()) {
+  return handlesFor(list.filter((j) => j.kind !== "lead")).map((h) => `@${h.handle} (${(DOING[h.job.kind] ?? h.job.kind).toLowerCase()})`).join(", ");
+}
+
+const leadJob = (list = listeners()) => list.find((j) => j.kind === "lead") ?? null;
+
+// Who a chat message reaches, from its @mentions (`to` for a worker's message, the text for
+// yours). No mention, or @guildmaster: the Guildmaster. @everyone / @all: every running worker.
+// A handle or role that is running: those workers. A role (and application) that is not: a new
+// worker in that role, started to act on it. Anything else is unknown, and nothing is sent.
+// { lead, everyone, jobs, revive: [{ member, app, earlier }], unknown }
+export function resolve(text, chat = [], applications = []) {
+  const live = listeners(), handles = handlesFor(live), named = mentionsIn(text);
+  const out = { lead: false, everyone: false, jobs: [], revive: [], unknown: [] };
+  if (!named.length) { out.lead = true; return out; }
+  for (const name of named) {
+    if (["everyone", "all"].includes(name)) { out.everyone = true; out.jobs = [...live]; continue; }
+    if (name === "guildmaster") { out.lead = true; continue; }
+    const hits = handles.filter((h) => h.handle === name || h.job.member === name || (name.includes("/") && h.handle.startsWith(name)));
+    if (hits.length) { for (const h of hits) if (!out.jobs.includes(h.job)) out.jobs.push(h.job); continue; }
+    const [member, part = ""] = name.split("/");
+    const app = part ? applications.find((a) => a.id === part || a.id.startsWith(`${part}-`) || a.id.startsWith(part)) ?? null : null;
+    if (!MEMBERS[member] || member === "guildmaster" || (part && !app)) { out.unknown.push(name); continue; }
+    const earlier = [...chat].reverse().find((m) => m.from === member && (!app || m.appId === app.id)) ?? null;
+    out.revive.push({ member, app, earlier });
+  }
+  return out;
+}
+
+// What a resolved message is called in the chat: "the Guildmaster", "everyone", "@sage/northwind",
+// "a new sage".
+export function recipients(target) {
+  const parts = [];
+  if (target.lead) parts.push("the Guildmaster");
+  if (target.everyone) parts.push("everyone");
+  else parts.push(...handlesFor(target.jobs).map((h) => `@${h.handle}`));
+  parts.push(...target.revive.map((r) => `a new ${r.member}${r.app ? `/${r.app.id.split("-")[0]}` : ""}`));
+  return parts.join(", ");
+}
+
+// Delivers a message as resolved: typed into running workers' terminals, the Guildmaster told
+// (or started, for your message), new workers started for roles that are not running. `from`:
+// "me" or a member's key. Returns the addresses it could not reach.
+export async function route(v, target, text, from = "me") {
+  const tag = from === "me" ? "[Chat]" : `[Chat from the ${MEMBERS[from]?.name ?? from}]`;
+  const failed = [], reached = new Set();
+  const send = async (job, line) => {
+    const address = agentFor(job)?.address;
+    if (!address || reached.has(address)) return;
+    reached.add(address);
+    try { await deliver(address, line); } catch { failed.push(address); }
+  };
+  for (const job of target.jobs) await send(job, `${tag} ${text}`);
+  if (target.lead) {
+    const lead = leadJob();
+    if (lead) await send(lead, `${tag} ${text} (running now: ${roster() || "nobody"})`);
+    else if (from === "me") {
+      const job = newJob({ key: jobKey("guildmaster", "lead", null, Date.now()), member: "guildmaster", kind: "lead" });
+      launch(v, job, prompts.guildmaster(v.dir, text, roster()));
+    }
+  }
+  for (const { member, app, earlier } of target.revive) {
+    if (app && jobs().some((j) => j.appId === app.id && isLive(j) && j.kind !== "lead")) continue; // someone is on it
+    const job = newJob({ key: jobKey(member, "reply", app?.id, Date.now()), member, kind: "reply", appId: app?.id ?? null, title: app ? nameOf(app) : "" });
+    launch(v, job, prompts.followUp(v.dir, member, app, earlier?.text ?? "", text, from === "me" ? "me" : `the ${MEMBERS[from]?.name ?? from}`));
+  }
+  return failed;
+}
+
 // Types a message into an agent's terminal and presses Enter.
 export async function deliver(address, text) {
-  const r = await hc(["send", address, `[Chat] ${text}`]);
+  const r = await hc(["send", address, text]);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout || "hc send failed").trim().split("\n")[0]);
 }
 
@@ -197,7 +268,7 @@ export function launch(v, job, task) {
 // ---- keeping the space tidy
 
 // Most urgent first: needs you, working, setting out, then the finished; ties oldest first.
-const RANK = { waiting: 0, stopped: 1, working: 2, starting: 3, done: 4, failed: 4 };
+const RANK = { listening: -1, waiting: 0, stopped: 1, working: 2, starting: 3, done: 4, failed: 4 };
 
 // The one tab.move that brings the space closest to that order, or null when it is in order.
 // One move a round: the space settles over a few rounds without ever thrashing.
@@ -285,6 +356,12 @@ export async function round(v, now = Date.now()) {
     if (v.chatSeen.has(message.id)) continue;
     v.chatSeen.add(message.id);
     if (message.from === "you") continue;
+    // A worker's message to other workers (the Guildmaster passing something on) is routed
+    // like yours, and not toasted.
+    if (mentionsIn(message.to).length) {
+      await route(v, resolve(message.to, snap.chat, snap.applications), message.text, message.from);
+      continue;
+    }
     const member = MEMBERS[message.from];
     notify({ title: `${member?.glyph ?? "💬"} ${member?.name ?? message.from}${message.appId ? ` · ${message.appId}` : ""}`, body: message.text.slice(0, 240), level: "info" });
   }
@@ -295,10 +372,14 @@ export async function round(v, now = Date.now()) {
     const scoutDue = snap.reports.includes(report) ? null : { key: jobKey("scout", "scout", today), report };
     const todo = plan(snap, jobs(), { threshold: minFit(snap.intake), scoutDue });
 
-    for (const { app, stage } of todo.advances) {
-      await saveApplication(v.dir, withStage(app, stage, today));
+    for (const { app, stage, reason } of todo.advances) {
+      const notes = stage === "closed" ? [app.notes, `Closed by the party: ${reason}.`].filter(Boolean).join(" ") : app.notes;
+      await saveApplication(v.dir, { ...withStage(app, stage, today), notes });
       wrote = true;
-      if (stage === "drafting") {
+      if (stage === "closed") {
+        log.push(say("sage", app.id, `📪 Closed ${nameOf(app)}: ${reason}`, now));
+        notify({ title: `Closed ${nameOf(app)}`, body: `${reason[0].toUpperCase()}${reason.slice(1)}. Add it and move it back to Party at work to reopen.`, level: "info" });
+      } else if (stage === "drafting") {
         const fit = fitOf(app);
         log.push(say("scout", app.id, `⚔ The party takes on ${nameOf(app)}${fit !== null ? ` (fit ${fit})` : ""}`, now));
       } else {

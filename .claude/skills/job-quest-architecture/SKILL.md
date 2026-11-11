@@ -86,7 +86,8 @@ Rules that keep this sound:
 ## The party chat
 
 - Workers write one JSON file a message into `chat/` (named `<YYYYMMDD-HHMMSS>-<member>.json`, `{ at, from, appId, text }`); every briefing says how (`chatHowTo` in `prompts.js`). The person's messages are saved the same way (`saveMessage`, `from: "you"`) and typed into the chosen workers' terminals with `hc send` as `[Chat] …` (`party.deliver`).
-- `feed()` weaves `log.jsonl` into the chat as events. Recipients come only from @mentions (`mentionsIn`, `handlesFor`, `chatTarget` in `main.js`): none or `@everyone` is every running worker; an unknown name sends nothing; a role/application with no running worker but an earlier message starts a reply worker. Typing `@` shows `mentionChoices()` over the field. The leader toasts each new worker message once (`v.chatSeen`).
+- `feed()` weaves `log.jsonl` into the chat as events. Recipients come only from @mentions, resolved by `party.resolve` and delivered by `party.route` for your messages and for workers' messages whose `to` mentions someone (the Guildmaster delegating): no mention or `@guildmaster` is the Guildmaster (a `lead` job, started by your first unaddressed message, state `listening`, no working slot); `@everyone` every running worker; a handle or role that is running, those workers; a role (and application) that is not, a new `reply` worker; anything else is unknown and nothing is sent. Typing `@` shows `mentionChoices()` over the field.
+- No posting after research, or no contact email after one `contact` search (`contact-search.md`), closes the application with the reason in its notes (`nextStep` returns `{ advance: "closed", reason }`). The leader toasts each new worker message once (`v.chatSeen`).
 
 ## Data folder
 

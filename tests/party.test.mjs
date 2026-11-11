@@ -41,11 +41,12 @@ test("an application in drafting goes Sage, Scribe, Inquisitor, Herald, then to 
   assert.deepEqual(step({ ...drafted, hasReview: true, verdict: "pass", round: 1, ...mailed, missingAttachments: ["R.pdf"] }), { member: "herald", kind: "package" });
   assert.deepEqual(step({ ...drafted, hasReview: true, verdict: "pass", round: 1, ...mailed }), { advance: "ready" });
   assert.deepEqual(step({ url: "", hasPosting: false }), { member: "sage", kind: "research" }, "the Sage finds the posting itself");
-  assert.match(step({ url: "", hasPosting: false, hasResearch: true }).stuck, /could not find it/);
-  // No address to send it to: a full stop after research, before anything is drafted.
-  assert.match(step({ hasResearch: true, contactEmail: "" }).stuck, /no contact email/);
-  assert.match(step({ hasResearch: true, contactEmail: "jobs at acme" }).stuck, /no contact email/);
-  assert.match(step({ ...drafted, contactEmail: "" }).stuck, /no contact email/, "not even the review or the email");
+  assert.deepEqual(step({ url: "", hasPosting: false, hasResearch: true }), { advance: "closed", reason: "the Sage could not find the posting" });
+  // No address to send it to: one deeper search, then closed. Nothing is drafted meanwhile.
+  assert.deepEqual(step({ hasResearch: true, contactEmail: "" }), { member: "sage", kind: "contact" });
+  assert.deepEqual(step({ hasResearch: true, contactEmail: "jobs at acme" }), { member: "sage", kind: "contact" });
+  assert.deepEqual(step({ ...drafted, contactEmail: "" }), { member: "sage", kind: "contact" }, "not the review or the email");
+  assert.equal(step({ hasResearch: true, contactEmail: "", hasContactSearch: true }).advance, "closed");
 });
 
 test("leads are taken on by fit, follow-ups and interview prep come by themselves", () => {
@@ -412,7 +413,7 @@ test("@ lists who is running; a mention picks who hears it; no mention is everyo
 
   // Typing @ shows everyone and each running worker; typing more filters.
   view.chatInput.type("@");
-  assert.deepEqual(view.mentionChoices().map((c) => c.handle), ["everyone", "scribe/beta", "sage/acme"]);
+  assert.deepEqual(view.mentionChoices().map((c) => c.handle), ["guildmaster", "everyone", "scribe/beta", "sage/acme"]);
   view.chatInput.type("Hey @sa");
   assert.deepEqual(view.mentionChoices().map((c) => c.handle), ["sage/acme"]);
   find(view.render(cx), "jq-mention-0").click({}, cx);
@@ -427,19 +428,18 @@ test("@ lists who is running; a mention picks who hears it; no mention is everyo
   await until(() => view.snap.chat.some((m) => m.from === "you"), "the saved message");
   assert.equal(view.snap.chat.find((m) => m.from === "you").to, "@sage/acme");
 
-  // No mention: everyone running.
-  view.chatInput.type("Wrap up by noon");
-  assert.equal(view.chatTarget().everyone, true);
+  // @everyone, said outright: every running worker.
+  view.chatInput.type("@everyone wrap up by noon");
   view.chatInput.submit(cx);
   await until(() => world.hcs.length === 3, "both deliveries");
   assert.deepEqual(world.hcs.slice(1).map((a) => a[1]).sort(), ["t1", "t2"]);
 
   // A name nobody has: nothing is sent, the text stays.
-  view.chatInput.type("@coach hello");
+  view.chatInput.type("@nobody hello");
   view.chatInput.submit(cx);
   assert.equal(world.hcs.length, 3);
-  assert.equal(view.chatInput.value(), "@coach hello");
-  assert.ok(world.notices.some((n) => /Nobody is called @coach/.test(n.title)));
+  assert.equal(view.chatInput.value(), "@nobody hello");
+  assert.ok(world.notices.some((n) => /Nobody is called @nobody/.test(n.title)));
 });
 
 test("Reply puts the worker's handle in the message", async () => {
@@ -483,12 +483,71 @@ test("mentioning a worker that has finished starts a new one with its message an
   find(view.render(cx), "jq-chat-0-reply").click({}, cx);
   assert.equal(view.chatInput.value(), "@sage/northwind ");
   view.chatInput.type("@sage/northwind Use jobs@northwind.xyz");
-  assert.equal(view.chatTarget().revive.from, "sage");
+  assert.equal(view.chatTarget().revive[0].member, "sage");
   view.chatInput.submit(cx);
+  await until(() => world.ran.some((r) => r.name === "tab.new" || r.name === "space.new"), "the new Sage");
   const started = world.ran.find((r) => r.name === "tab.new" || r.name === "space.new");
   assert.match(started.args.task, /An earlier Sage, working on FDE at Northwind, posted: "No contact email is published\." I replied: "@sage\/northwind Use jobs@northwind\.xyz"/);
   const [job] = party.jobs();
   assert.deepEqual([job.member, job.kind, job.appId], ["sage", "reply", "northwind"]);
-  await until(() => view.snap.chat.some((m) => m.from === "you" && m.to === "a new sage"), "the saved message");
+  await until(() => view.snap.chat.some((m) => m.from === "you" && m.to === "a new sage/northwind"), "the saved message");
   assert.equal(world.hcs.length, 0, "nothing typed into a terminal that is gone");
+});
+
+test("a message with no @ goes to the Guildmaster: started the first time, typed in after", async () => {
+  const scribe = { ...party.newJob({ key: "b", member: "scribe", kind: "draft", appId: "beta-dev" }), state: "working", address: "t2" };
+  party.saveJobs([scribe]);
+  world.running = [{ address: "t2", tab: "tab2", tab_name: scribe.tab, status: "working" }];
+  const view = await copy("chat");
+  view.chatInput.type("Stop chasing seed-stage startups");
+  assert.equal(view.chatTarget().lead, true);
+  view.chatInput.submit(cx);
+  await until(() => world.ran.some((r) => r.name === "space.new" || r.name === "tab.new"), "the Guildmaster");
+  const started = world.ran.find((r) => r.name === "space.new" || r.name === "tab.new");
+  assert.match(started.args.task, /You are the Guildmaster/);
+  assert.match(started.args.task, /My message: "Stop chasing seed-stage startups"/);
+  assert.match(started.args.task, /Running now: @scribe\/beta \(drafting\)/);
+  assert.equal(world.hcs.length, 0, "the Scribe heard nothing");
+  const lead = party.jobs().find((j) => j.kind === "lead");
+  assert.equal(lead.member, "guildmaster");
+
+  // On duty: listening, not "needs you", and it takes no working slot.
+  world.running.push({ address: "t3", tab: "tab3", tab_name: lead.tab, status: "idle" });
+  assert.equal(jobState(lead, world.running[1], null, Date.now()), "listening");
+  assert.equal(plan({ today, applications: [] }, [{ ...lead, state: "listening" }], { threshold: 70, scoutDue: { key: "s", report: "r" }, room: 1 }).starts.length, 1);
+
+  party.saveJobs([{ ...lead, state: "listening", address: "t3" }]);
+  view.chatInput.type("Also skip anything in Rust");
+  view.chatInput.submit(cx);
+  await until(() => world.hcs.length === 1, "typed in");
+  assert.deepEqual(world.hcs[0], ["send", "t3", "[Chat] Also skip anything in Rust (running now: @scribe/beta (drafting))"]);
+});
+
+test("the Guildmaster passes a message on: to a running worker, or a new one", async () => {
+  await seed("acme-ai-engineer", { "application.json": JSON.stringify({ company: "Acme", role: "AI Engineer", stage: "drafting" }) });
+  const scribe = { ...party.newJob({ key: "b", member: "scribe", kind: "draft", appId: "beta-dev" }), state: "working", address: "t2" };
+  party.saveJobs([scribe]);
+  world.running = [{ address: "t2", tab: "tab2", tab_name: scribe.tab, status: "working" }];
+  const view = await copy("rail");
+  party.setAutopilot(false);
+  await round(view);
+  await post("20261111-130000-guildmaster.json", { at: "2026-11-11T13:00:00Z", from: "guildmaster", to: "@scribe/beta", text: "Keep the letter under 250 words." });
+  await post("20261111-130001-guildmaster.json", { at: "2026-11-11T13:00:01Z", from: "guildmaster", to: "@sage/acme", text: "Find their contact email." });
+  await view.reload(cx);
+  await round(view);
+  assert.deepEqual(world.hcs[0], ["send", "t2", "[Chat from the Guildmaster] Keep the letter under 250 words."]);
+  const started = world.ran.find((r) => r.name === "space.new" || r.name === "tab.new");
+  assert.match(started.args.task, /the Guildmaster sent this to the Sage about AI Engineer at Acme: "Find their contact email\."/);
+  assert.ok(!world.notices.some((n) => /Guildmaster/.test(n.title)), "messages to workers are not toasted");
+});
+
+test("an application with no posting or no contact email is closed with its reason, once", async () => {
+  await seed("ghost", { "application.json": JSON.stringify({ company: "Ghost", role: "Dev", stage: "drafting", notes: "found on HN" }), "posting.md": "p\n", "research.md": "r\n", "contact-search.md": "No published address found\n" });
+  const view = await copy("rail");
+  await round(view);
+  const held = await json("applications/ghost/application.json");
+  assert.equal(held.stage, "closed");
+  assert.equal(held.notes, "found on HN Closed by the party: no published contact email (see contact-search.md).");
+  await round(view);
+  assert.equal(world.notices.filter((n) => /Closed Ghost/.test(n.title)).length, 1);
 });

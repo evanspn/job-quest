@@ -501,40 +501,14 @@ export default class JobQuest extends View {
 
   // ---- the party chat
 
-  // Saves the reply and starts a worker in the earlier one's role to act on it.
-  reviveFor(message, text, cx) {
-    const member = MEMBERS[message.from] ? message.from : "archivist";
-    const app = this.snap.applications.find((a) => a.id === message.appId) ?? null;
-    if (app && party.jobs().some((j) => j.appId === app.id && isLive(j))) {
-      notify({ title: "The party is on it already", body: `Someone is working on ${nameOf(app)}; reply to them instead.`, level: "info" });
-      return;
-    }
-    this.mutate(cx, () => saveMessage(this.dir, { from: "you", to: `a new ${member}`, appId: app?.id ?? "", text }));
-    this.ask(member, "reply", app, prompts.followUp(this.dir, member, app, message.text, text));
-  }
-
   chatItems() { return this.snap ? feed(this.snap.chat, this.snap.log).slice(-120) : []; }
 
   // The running workers you can @mention, with their handles.
   chatHandles() { return handlesFor(party.listeners()); }
 
-  // Who a message goes to, from its @mentions: no mention (or @everyone / @all) is everyone
-  // running. A mention of a role and application with no running worker, but an earlier
-  // message from one, starts a new worker to act on it. { everyone, jobs, revive, unknown }.
+  // Who a message goes to, from its @mentions (party.resolve): no mention is the Guildmaster.
   chatTarget(text = this.chatInput.value()) {
-    const handles = this.chatHandles(), named = mentionsIn(text);
-    if (!named.length || named.some((n) => ["everyone", "all"].includes(n))) return { everyone: true, jobs: handles.map((h) => h.job), revive: null, unknown: [] };
-    const jobs = [], unknown = [];
-    let revive = null;
-    for (const name of named) {
-      const hits = handles.filter((h) => h.handle === name || h.job.member === name || (name.includes("/") && h.handle.startsWith(name)));
-      if (hits.length) { for (const h of hits) if (!jobs.includes(h.job)) jobs.push(h.job); continue; }
-      const [member, app = ""] = name.split("/");
-      const earlier = this.snap && [...this.snap.chat].reverse().find((m) => m.from === member && (!app || m.appId.startsWith(app)));
-      if (earlier && MEMBERS[member]) revive ??= earlier;
-      else unknown.push(name);
-    }
-    return { everyone: false, jobs, revive, unknown };
+    return party.resolve(text, this.snap?.chat ?? [], this.snap?.applications ?? []);
   }
 
   // The @ list: running workers whose handle starts with what is typed, and everyone.
@@ -542,7 +516,8 @@ export default class JobQuest extends View {
     const typed = typingMention(this.chatInput.value());
     if (typed === null) return null;
     const handles = this.chatHandles().map((h) => ({ handle: h.handle, job: h.job }));
-    return [{ handle: "everyone", job: null }, ...handles].filter((c) => c.handle.startsWith(typed));
+    return [{ handle: "guildmaster", job: party.listeners().find((j) => j.kind === "lead") ?? null }, { handle: "everyone", job: null },
+      ...handles.filter((h) => h.job.kind !== "lead")].filter((c) => c.handle.startsWith(typed));
   }
 
   // Puts the picked handle in place of the @ being typed.
@@ -563,29 +538,26 @@ export default class JobQuest extends View {
     cx.notify();
   }
 
-  // Saves the message to the chat, then types it into each chosen worker's terminal.
+  // Saves the message to the chat, then delivers it as its @mentions say (party.route).
   sendChat(cx) {
     const text = this.chatInput.value().trim();
     if (!text || !this.snap) return;
-    this.chatInput.set_value("");
     const target = this.chatTarget(text);
     if (target.unknown.length) {
-      notify({ title: `Nobody is called @${target.unknown.join(", @")}`, body: "Type @ to see who is running.", level: "warning" });
-      this.chatInput.set_value(text);
+      notify({ title: `Nobody is called @${target.unknown.join(", @")}`, body: "Type @ to see who you can reach.", level: "warning" });
       return;
     }
-    if (target.revive && !target.jobs.length) { this.reviveFor(target.revive, text, cx); return; }
-    const job = target.jobs.length === 1 ? target.jobs[0] : null;
-    const heard = target.jobs.map((j) => party.agentFor(j)?.address).filter(Boolean);
-    const to = target.everyone ? "everyone" : handlesFor(target.jobs).map((h) => `@${h.handle}`).join(" ");
+    this.chatInput.set_value("");
+    const job = target.jobs.length === 1 && !target.lead ? target.jobs[0] : null;
+    const to = party.recipients(target);
     this.mutate(cx, async () => {
-      await saveMessage(this.dir, { from: "you", to: to || "nobody", appId: job?.appId ?? "", text });
-      const failed = [];
-      for (const address of heard) { try { await party.deliver(address, text); } catch { failed.push(address); } }
-      if (!heard.length) notify({ title: "Saved, but nobody heard it", body: "No worker is running. Your message is in the chat for the next one.", level: "info" });
+      await saveMessage(this.dir, { from: "you", to: to || "nobody", appId: job?.appId ?? target.revive[0]?.app?.id ?? "", text });
+      if (target.everyone && !target.jobs.length) notify({ title: "Saved, but nobody heard it", body: "No worker is running. Leave out the @ to reach the Guildmaster.", level: "info" });
+      const failed = await party.route(this, target, text, "me");
       if (failed.length) throw new Error(`could not reach ${failed.join(", ")}`);
     });
   }
+
 
   // A tab in the Terminals view: an agent is shown below; a program not yet an agent (asking a
   // first-run question) is peeked over the window so it can be answered.
