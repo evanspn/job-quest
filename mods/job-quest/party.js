@@ -22,6 +22,8 @@ export const OUTBOX_KEY = "job-quest.outbox";       // [{ address, text, at }]: 
 // Every agent Job Quest starts lives in this space. Earlier versions named it "Job Quest party".
 export const PARTY_SPACE = "Job Quest";
 const OLD_SPACES = ["Job Quest party"];
+// The party's own tab in that space: the Party view, whose copy runs the party on any layout.
+export const HALL_TAB = "⚔ party";
 export const partySpace = () => spaces().find((s) => !s.machine && (s.name === PARTY_SPACE || OLD_SPACES.includes(s.name))) ?? null;
 const AGENT_BLOCK = "jq-agent";
 // In the Terminals view the agent is shown there, full size; the agent pane stays shut so one
@@ -325,11 +327,13 @@ export function launch(v, job, task) {
 const RANK = { listening: -1, waiting: 0, stopped: 1, working: 2, starting: 3, done: 4, failed: 4 };
 
 // The one tab.move that brings the space closest to that order, or null when it is in order.
-// One move a round: the space settles over a few rounds without ever thrashing.
+// One move a round: the space settles over a few rounds without ever thrashing. The party's own
+// tab stays first.
 export function nextMove(tabs, jobOfTab) {
   const ranked = tabs.map((tab, i) => {
     const job = jobOfTab(tab.id);
-    return { tab, rank: job ? RANK[job.state] ?? 4 : 4, started: job?.startedAt ?? Infinity, i };
+    const rank = tab.name === HALL_TAB ? -2 : job ? RANK[job.state] ?? 4 : 4;
+    return { tab, rank, started: job?.startedAt ?? Infinity, i };
   });
   const wanted = [...ranked].sort((a, b) => a.rank - b.rank || a.started - b.started || a.i - b.i);
   const at = wanted.findIndex((entry, i) => entry.tab.id !== tabs[i].id);
@@ -411,8 +415,15 @@ export async function round(v, now = Date.now()) {
     log.push(say("guildmaster", null, `🧹 Closed a finished tab: ${agent.tab_name || t.address}`, now));
   }
 
-  // The space: its current name, and its tabs in order of what needs the person.
+  // The space: its current name, the party's own tab (kept open, so the party runs whatever
+  // layout is shown), and its tabs in order of what needs the person.
   const space = partySpace();
+  if (space && !(space.tabs ?? []).some((tab) => tab.name === HALL_TAB) && !v.hallAsked) {
+    v.hallAsked = true; // once per copy: a tab that does not show up is not asked for again and again
+    const here = whereYouAre();
+    run("tab.new", { name: HALL_TAB, space: space.id, mod: "job-quest", props: { part: "party" } });
+    if (here.space?.id === space.id && here.tab) run("tab.select", { id: here.tab });
+  }
   if (space && space.name !== PARTY_SPACE) run("space.rename", { id: space.id, name: PARTY_SPACE });
   if (space?.tabs?.length > 1 && whereYouAre().space?.id !== space.id) {
     const all = jobs(), byTab = new Map();

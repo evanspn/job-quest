@@ -14,6 +14,7 @@ export const theme = () => world.theme ?? new Proxy({}, { get: (_t, name) => `#$
 export const window = () => ({ platform: "linux" });
 export const props = () => world.props;
 export const layout = () => world.layout;
+export const layouts = () => world.layouts ?? ["main", "job-quest"];
 export const settings = () => ({ zoom: 1, font_family: "JetBrains Mono" });
 export const agents = () => world.running;
 export const spaces = () => world.spaces ?? [{ id: "s1", name: "~", active: true, machine: null }];

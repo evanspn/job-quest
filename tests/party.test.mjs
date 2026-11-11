@@ -148,7 +148,8 @@ async function seed(id, files) {
 }
 
 const json = async (path) => JSON.parse(await readFile(join(dir, path), "utf8"));
-const started = () => world.ran.filter((r) => r.name === "tab.new" || r.name === "space.new");
+// Agents started (not the party's own mod tab).
+const started = () => world.ran.filter((r) => (r.name === "tab.new" || r.name === "space.new") && r.args.argv);
 
 // A round as the timer would run it, then a fresh read of the folder.
 async function round(view) {
@@ -161,7 +162,7 @@ beforeEach(async () => {
   forgetCopies();
   const home = await mkdtemp(join(tmpdir(), "job-quest-party-"));
   Object.assign(world, {
-    home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [], sounds: [], hcs: [], focus: null,
+    home, terminals: [], shared: {}, ran: [], execs: [], notices: [], exec: null, props: null, layout: null, running: [], sounds: [], hcs: [], focus: null, layouts: null,
     spaces: [{ id: "s1", name: "~", active: true, machine: null }],
     agents: [{ key: "claude", name: "Claude Code", run: ["claude"], installed: true }],
   });
@@ -602,6 +603,7 @@ test("a new job never takes an old job's agent, and quiet strays are swept up", 
 
 test("the beacon runs the party from your everyday layout and remembers it as home", async () => {
   world.shared.layout = "herdr-jq";
+  world.layouts = ["main", "job-quest", "herdr-jq"];
   const view = await copy("beacon");
   assert.equal(world.shared["job-quest.home"], "herdr-jq");
   assert.equal(party.lead(view.token), true, "it may lead");
@@ -610,4 +612,17 @@ test("the beacon runs the party from your everyday layout and remembers it as ho
   const bar = await copy("bar");
   find(bar.render(cx), "jq-leave").click({}, cx);
   assert.deepEqual(world.ran.at(-1), { name: "layout.switch", args: { name: "herdr-jq" } });
+});
+
+test("the party keeps its own tab in the Job Quest space, first, so it runs on any layout", async () => {
+  world.spaces = [{ id: "s1", name: "~", active: true, machine: null, tabs: [] },
+    { id: "jq", name: "Job Quest", active: false, machine: null, tabs: [{ id: "tab1", name: "🔮 sage/acme", panes: 1 }] }];
+  const view = await copy("rail");
+  party.setAutopilot(false);
+  await round(view);
+  const made = world.ran.find((r) => r.name === "tab.new");
+  assert.deepEqual(made.args, { name: party.HALL_TAB, space: "jq", mod: "job-quest", props: { part: "party" } });
+  await round(view);
+  assert.equal(world.ran.filter((r) => r.name === "tab.new").length, 1, "asked for once");
+  assert.deepEqual(party.nextMove([{ id: "a", name: "🔮 sage/acme" }, { id: "h", name: party.HALL_TAB }], () => null), { id: "h", index: 1 });
 });

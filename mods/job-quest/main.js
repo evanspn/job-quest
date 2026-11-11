@@ -21,7 +21,7 @@ import { View } from "gpui-kit";
 import { InputState, TextareaState, EditorState, ScrollHandle } from "gpui-base";
 import {
   run, exec, notify, knownAgents, agents, terminals, pickFolder, shared, setShared, watchFolder, window,
-  layout, settings, props, nextCommand,
+  layout, layouts, settings, props, nextCommand,
 } from "herdr";
 import {
   INTAKE_FIELDS, DOCS, parse, newApplication, withStage, parseRepo, mergeRepos, toggleRepo,
@@ -45,7 +45,9 @@ const STARTING_KEY = "job-quest.starting";
 export const PARTS = ["bar", "board", "detail", "profile", "intake", "party", "rail", "tabs", "chat", "beacon", "panel"];
 // The parts that may run the party; a lease picks one. The beacon goes in your everyday layout,
 // so the party runs (and tidies up) while Job Quest is not on screen.
-const LEADERS = ["rail", "panel", "beacon"];
+// The party view leads too: the leader keeps one open in a tab of the Job Quest space (party.js,
+// HALL_TAB), and a mod in a tab keeps running when the tab is not shown, on any layout.
+const LEADERS = ["rail", "panel", "beacon", "party"];
 // The layout the beacon lives in: where "Back" in Job Quest's bar returns to.
 export const HOME_KEY = "job-quest.home";
 const PARTY_EVERY = 3000;
@@ -479,7 +481,8 @@ export default class JobQuest extends View {
   // Job Quest's way back to where the beacon lives (else Herdr's main layout), and the way in.
   goHome() {
     const home = shared(HOME_KEY);
-    run("layout.switch", { name: typeof home === "string" && home !== "job-quest" ? home : "main" });
+    const ok = typeof home === "string" && home !== "job-quest" && layouts().includes(home);
+    run("layout.switch", { name: ok ? home : "main" });
   }
   openQuest() { run("layout.switch", { name: "job-quest" }); }
 
