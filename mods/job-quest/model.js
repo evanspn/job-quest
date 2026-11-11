@@ -230,8 +230,12 @@ export const DOING = {
 export const MAX_PARTY = 3;        // agents the party runs at once
 export const REVIEW_ROUNDS = 2;    // reviews before the drafts go to you whatever the verdict
 export const START_TIMEOUT = 5 * 60 * 1000;
-// States of a job that still has an agent on it.
-export const LIVE = ["starting", "working", "waiting"];
+// States of a job that still has an agent on it. waiting: it needs the person (a permission
+// prompt, or a question it posted in the chat). stopped: it went quiet without its file and
+// without asking anything.
+export const LIVE = ["starting", "working", "waiting", "stopped"];
+// Jobs that are a conversation in the terminal: quiet means it is waiting for the person.
+const CONVERSATIONS = ["interview"];
 export const isLive = (job) => LIVE.includes(job.state);
 
 // intake.autoFit: the score a Scout's lead needs for the party to take it on. Blank: 70. "off": never.
@@ -282,6 +286,9 @@ export function nextStep(app, today, threshold) {
 // its agent is gone.
 export function jobDone(job, app, reports = []) {
   if (job.kind === "scout") return reports.includes(job.report);
+  if (job.kind === "reply") return true;
+  // Profile and intake jobs have no application and no file to check.
+  if (["interview", "master", "repos"].includes(job.kind)) return null;
   if (!app) return false;
   switch (job.kind) {
     case "research": return app.hasResearch;
@@ -294,6 +301,7 @@ export function jobDone(job, app, reports = []) {
     case "email": return app.hasEmail;
     case "followup": return app.hasFollowup;
     case "prep": return app.hasPrep;
+    case "export": return app.hasPdfs;
     case "reply": return true; // done once its agent goes quiet
     default: return null;
   }
@@ -334,12 +342,16 @@ export function plan(snapshot, jobs, { threshold, scoutDue, room = MAX_PARTY }) 
   return { starts, advances, stuck };
 }
 
-// A job's state from its agent (agents(): status working | blocked | done | idle, or absent).
-export function jobState(job, agent, done, now) {
+// A job's state from its agent (agents(): status working | blocked | done | idle, or absent),
+// whether its file is on disk (`done`: true, false, or null for a job with no file to check),
+// and whether it has posted in the chat since it started (`asked`).
+export function jobState(job, agent, done, now, asked = false) {
   if (agent) {
     if (agent.status === "working") return "working";
     if (agent.status === "blocked") return "waiting";
-    return done ? "done" : "waiting";
+    if (done === true) return "done";
+    if (done === null) return CONVERSATIONS.includes(job.kind) ? "waiting" : "done";
+    return asked ? "waiting" : "stopped";
   }
   if (job.address) return done === false ? "failed" : "done";
   return now - job.startedAt > START_TIMEOUT ? "failed" : "starting";

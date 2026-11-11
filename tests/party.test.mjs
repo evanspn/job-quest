@@ -89,12 +89,17 @@ test("a job's state comes from its agent and its files", () => {
   assert.equal(jobState(job, null, false, START_TIMEOUT + 1), "failed");
   assert.equal(jobState(job, { status: "working" }, true, 0), "working");
   assert.equal(jobState(job, { status: "blocked" }, false, 0), "waiting");
-  assert.equal(jobState(job, { status: "idle" }, false, 0), "waiting", "it stopped to ask something");
+  assert.equal(jobState(job, { status: "idle" }, false, 0), "stopped", "quiet without its file, asking nothing: not your problem yet");
+  assert.equal(jobState(job, { status: "idle" }, false, 0, true), "waiting", "it asked you in the chat");
+  assert.equal(jobState({ ...job, kind: "export" }, { status: "done" }, null, 0), "done", "a job with no file to check is done when quiet");
+  assert.equal(jobState({ ...job, kind: "interview" }, { status: "idle" }, null, 0), "waiting", "an interview waits for your answer");
   assert.equal(jobState(job, { status: "done" }, true, 0), "done");
   assert.equal(jobState({ ...job, address: "t1" }, null, false, 0), "failed", "closed before finishing");
   assert.equal(jobState({ ...job, address: "t1" }, null, null, 0), "done", "a job with no check ends with its agent");
   assert.equal(jobDone({ kind: "review", round: 1 }, app({ verdict: "pass", round: 1 })), false, "the old review");
   assert.equal(jobDone({ kind: "review", round: 1 }, app({ verdict: "pass", round: 2 })), true);
+  assert.equal(jobDone({ kind: "interview" }, null), null, "no application, nothing to check");
+  assert.equal(jobDone({ kind: "research" }, null), false);
 });
 
 test("every party prompt names its output file and forbids sending", () => {

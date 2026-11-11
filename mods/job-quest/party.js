@@ -197,7 +197,7 @@ export function launch(v, job, task) {
 // ---- keeping the space tidy
 
 // Most urgent first: needs you, working, setting out, then the finished; ties oldest first.
-const RANK = { waiting: 0, working: 1, starting: 2, done: 3, failed: 3 };
+const RANK = { waiting: 0, stopped: 1, working: 2, starting: 3, done: 4, failed: 4 };
 
 // The one tab.move that brings the space closest to that order, or null when it is in order.
 // One move a round: the space settles over a few rounds without ever thrashing.
@@ -235,8 +235,8 @@ export async function round(v, now = Date.now()) {
       }
       continue;
     }
-    // A party job that has waited too long is stale: close it; its step shows Start … now.
-    if (job.auto && job.state === "waiting" && job.waitingSince && now - job.waitingSince > STALE && agent?.address !== shownAddress()) {
+    // A party job that has waited or sat stopped too long is stale: close it; its step shows Start … now.
+    if (job.auto && ["waiting", "stopped"].includes(job.state) && job.waitingSince && now - job.waitingSince > STALE && agent?.address !== shownAddress()) {
       const { member, doing } = describe(job);
       if (agent) run("tab.close", { id: agent.tab, confirmed: true });
       changed.push({ ...job, state: "failed", endedAt: now, closed: true });
@@ -245,18 +245,22 @@ export async function round(v, now = Date.now()) {
     }
     const next = { ...job, address: job.address ?? agent?.address ?? null };
     const done = jobDone(job, appOf(job.appId), snap.reports);
-    next.state = jobState(next, agent, done, now);
+    const asked = snap.chat.some((m) => m.from === job.member && (!job.appId || m.appId === job.appId) && Date.parse(m.at) >= job.startedAt);
+    next.state = jobState(next, agent, done, now, asked);
     if (next.state === job.state && next.address === job.address) continue;
     const { member, doing } = describe(job);
     if (next.state === "done" || next.state === "failed") next.endedAt = now;
-    next.waitingSince = next.state === "waiting" ? job.waitingSince || now : 0;
+    next.waitingSince = ["waiting", "stopped"].includes(next.state) ? job.waitingSince || now : 0;
     if (next.state === "done") log.push(say(job.member, job.appId, `${member.glyph} ${member.name} finished ${doing.toLowerCase()}`, now));
     if (next.state === "failed") {
       log.push(say(job.member, job.appId, `${member.glyph} ${member.name} stopped without finishing ${doing.toLowerCase()}`, now));
       if (job.auto) notify({ title: `${member.glyph} ${member.name} couldn't finish`, body: `${doing}. Its tab says why; start the step again from the application.`, level: "error" });
     }
     if (next.state === "waiting" && job.state !== "waiting" && job.auto) {
-      notify({ title: `${member.glyph} ${member.name} needs you`, body: doing, level: "warning" });
+      notify({ title: `${member.glyph} ${member.name} needs you`, body: agent?.status === "blocked" ? `${doing}: it is asking permission in its terminal.` : `${doing}: it asked you something in the chat.`, level: "warning" });
+    }
+    if (next.state === "stopped" && job.state !== "stopped") {
+      log.push(say(job.member, job.appId, `${member.glyph} ${member.name} stopped before finishing ${doing.toLowerCase()}`, now));
     }
     changed.push(next);
   }

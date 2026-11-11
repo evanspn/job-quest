@@ -82,7 +82,7 @@ async function loadApplication(dir, id) {
     emailTo: email?.to ?? "", emailFrom: email?.from ?? "", attachments: email?.attachments ?? [],
     missingAttachments: (email?.attachments ?? []).filter((name) => !files.includes(name)),
   };
-  return { ...toApplication(id, parse(json)), ...has, ...review, ...mail };
+  return { ...toApplication(id, parse(json)), ...has, ...review, ...mail, hasPdfs: files.some((name) => name.toLowerCase().endsWith(".pdf")) };
 }
 
 // The whole folder. A missing or broken file reads as empty.

@@ -8,7 +8,7 @@ import * as party from "./party.js";
 import { button, chip, heading, note, row, card, scroller } from "./ui.js";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const STATE_WORDS = { starting: "setting out", working: "working", waiting: "needs you", done: "done", failed: "stopped" };
+const STATE_WORDS = { starting: "setting out", working: "working", waiting: "needs you", stopped: "stopped early", done: "done", failed: "gave up" };
 
 // A fit score as a loot rarity, so the best leads stand out on the board.
 export function rarity(fit, t) {
@@ -24,6 +24,7 @@ const memberColor = (m, t) => t[m.color] ?? t.accent;
 function stateMark(t, job, id) {
   if (job.state === "working" || job.state === "starting") return div().id(id).text_color(t.working).frames(SPINNER, 90);
   if (job.state === "waiting") return div().id(id).text_color(t.blocked).loop("opacity", { from: 0.35, to: 1, period: 900 }).child("●");
+  if (job.state === "stopped") return div().id(id).text_color(t.dim).child("■");
   if (job.state === "failed") return div().id(id).text_color(t.blocked).child("✕");
   return div().id(id).text_color(t.done).child("✓");
 }
@@ -165,7 +166,7 @@ export function partyBody(v, t) {
 
 // The Terminals view's strip: a tab per terminal Job Quest started, named for who and what for
 // ("🔮 sage/hooli-ai-engineer"). The agent block under it shows the chosen one full size.
-const AGENT_STATE = { working: "working", blocked: "waiting", done: "done", idle: "waiting" };
+const AGENT_STATE = { working: "working", blocked: "waiting", done: "done", idle: "done" };
 
 export function terminalTabs(v, t) {
   const list = party.folderTerminals(v.dir), shown = party.shownAddress();
